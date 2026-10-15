@@ -1,6 +1,5 @@
 import os
-from datetime import datetime
-
+from datetime import datetime, timezone, timedelta
 from lib.config import ADMIN_USER_ID, GROUP_TIMEZONE
 from lib.db import get_db
 
@@ -211,9 +210,6 @@ def remove_daily_task(task_id):
 
 def create_state(user_id, chat_id, state, expires_minutes=15):
     db = _db()
-    expires = (datetime.utcnow().timestamp() + expires_minutes * 60)
-    from datetime import datetime, timezone, timedelta
-
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
     res = db.table("conversation_state").insert(
         {"user_id": user_id, "chat_id": chat_id, "state": state, "expires_at": expires_at.isoformat()}
