@@ -401,8 +401,13 @@ def _bot_mentioned(text):
 
 def handle_group_message(chat_id, tg_user, text, msg):
     if not config.is_allowed_group(chat_id):
+        tg.send_message(
+            chat_id,
+            f"This group isn't allow-listed (ID: {chat_id}). Ask admin to update ALLOWED_GROUP_IDS in Vercel, then redeploy.",
+        )
         return
     if not config.is_allowed_user(tg_user["id"]):
+        tg.send_message(chat_id, "You aren't authorized to use this bot.")
         return
     user = _auth_user(tg_user)
     if not user:
