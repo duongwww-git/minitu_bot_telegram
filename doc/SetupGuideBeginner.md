@@ -234,4 +234,21 @@ From now on:
 **Time looks wrong**
 - Cron is fixed at 23:00 UTC = 6:00 AM GMT+7. If you need a different time, change `vercel.json` schedule and redeploy. Use https://crontab.guru (UTC).
 
+**Vercel says "No FastAPI entrypoint found" or references `api/*.py`**
+- The repo was updated to a single `app.py` entrypoint. If Vercel still mentions old `api/webhook.py` or `api/cron.py` files, your deployment is stale.
+- Commit and push all changes:
+  ```bash
+  cd /Users/duongwww/repos/ai-agent
+  git add .
+  git commit -m "Use app.py entrypoint"
+  git push
+  ```
+- In Vercel, open your project -> `Deployments` -> `Redeploy` (or wait for the GitHub-triggered deploy).
+- Confirm `pyproject.toml` exists with `[tool.vercel] entrypoint = "app:app"`.
+- If the error persists, clear Vercel's cache by deleting the project and importing the repo again, or deploy with the CLI from the project root:
+  ```bash
+  vercel --prod --force
+  ```
+
+
 Good luck. You now run a $0 personal reminder system.

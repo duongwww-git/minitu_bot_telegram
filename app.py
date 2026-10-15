@@ -1,16 +1,52 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, Request, HTTPException
 
-from lib import config, tg, digest, repo
-from lib.digest import iso_date_for_group_now
+from lib import config, tg, handlers, digest, repo
 
 app = FastAPI()
 
-CRON_PATH = "/api/cron"
+
+def _verify_webhook(request: Request):
+    if config.WEBHOOK_SECRET:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token != config.WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="invalid webhook secret")
+
+
+@app.get("/api/webhook")
+async def webhook_health():
+    return {"ok": True, "service": "ai-agent-reminder v1"}
+
+
+@app.post("/api/webhook")
+async def webhook(request: Request):
+    _verify_webhook(request)
+    try:
+        update = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json")
+
+    try:
+        if "callback_query" in update:
+            handlers.handle_callback(update["callback_query"])
+        elif "message" in update:
+            msg = update["message"]
+            chat = msg.get("chat", {})
+            chat_id = chat.get("id")
+            chat_type = chat.get("type", "private")
+            tg_user = msg.get("from", {})
+            text = (msg.get("text") or "").strip()
+            if chat_type == "private":
+                handlers.handle_private_message(chat_id, tg_user, text)
+            else:
+                handlers.handle_group_message(chat_id, tg_user, text, msg)
+    except Exception as e:
+        print(f"webhook error: {repr(e)}")
+    return {"ok": True}
 
 
 def _authorized(request: Request):
@@ -23,7 +59,6 @@ def _authorized(request: Request):
     q = request.query_params.get("secret")
     if q and q == secret:
         return True
-    # Vercel cron user-agent fallback for personal deployments
     if request.headers.get("User-Agent", "").startswith("vercel-cron"):
         return True
     return False
