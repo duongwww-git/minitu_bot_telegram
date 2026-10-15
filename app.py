@@ -98,3 +98,19 @@ async def cron(request: Request):
 @app.get("/api/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/api/debug")
+async def debug():
+    from lib import config as cfg
+
+    return {
+        "webhook_secret_set": bool(cfg.WEBHOOK_SECRET),
+        "webhook_secret_length": len(cfg.WEBHOOK_SECRET or ""),
+        "bot_token_set": bool(cfg.BOT_TOKEN),
+        "db_url_set": bool(cfg.SUPABASE_URL),
+        "db_key_set": bool(cfg.SUPABASE_SERVICE_ROLE_KEY),
+        "allowed_users": cfg.ALLOWED_USER_IDS,
+        "allowed_groups": cfg.ALLOWED_GROUP_IDS,
+        "admin": cfg.ADMIN_USER_ID,
+    }
