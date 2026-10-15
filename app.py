@@ -87,7 +87,7 @@ async def cron(request: Request):
         try:
             text = digest.build_digest(g)
             for chunk in tg.split_text(text):
-                tg.send_message(g["tg_group_id"], chunk)
+                tg.send_message(g["tg_group_id"], chunk, parse_mode="HTML")
             repo.set_setting(key, today_local)
             sent += 1
         except Exception as e:

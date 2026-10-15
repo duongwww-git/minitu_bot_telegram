@@ -12,15 +12,21 @@ def _post(method, payload):
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN not configured")
     r = httpx.post(f"{TG_BASE}/{method}", json=payload, timeout=20)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        print(f"Telegram {method} failed body={r.text!r}")
+        raise
     data = r.json()
     if not data.get("ok"):
         raise RuntimeError(f"Telegram {method} failed: {data}")
     return data.get("result")
 
 
-def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+def send_message(chat_id, text, reply_markup=None, parse_mode=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
     return _post("sendMessage", payload)
