@@ -195,12 +195,12 @@ def handle_command(cmd, args, user, chat_id, is_group=False, group_id=None):
         if not is_group:
             tg.send_message(chat_id, "Run /join inside the group chat.")
             return
-        if not config.is_allowed_group(group_id):
+        if not config.is_allowed_group(chat_id):
             tg.send_message(chat_id, "This group is not allowed.")
             return
-        g = repo.ensure_group(group_id, None)
+        g = repo.ensure_group(chat_id, None)
         repo.link_membership(user["id"], g["id"])
-        tg.send_message(chat_id, "Linked to group.")
+        tg.send_message(chat_id, f"Linked to group {chat_id}.")
         return
 
     if cmd in ("/add",):
