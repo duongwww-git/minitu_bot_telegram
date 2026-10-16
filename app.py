@@ -91,7 +91,8 @@ async def cron(request: Request):
             repo.set_setting(key, today_local)
             sent += 1
         except Exception as e:
-            errors.append(f"{g.get('title')}: {repr(e)}")
+            resp_text = getattr(getattr(e, 'response', None), 'text', None)
+            errors.append(f"group_id={g.get('tg_group_id')}: {repr(e)} | body={resp_text}")
     return {"ok": True, "today_local": today_local, "sent": sent, "skipped": skipped, "errors": errors}
 
 
