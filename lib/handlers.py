@@ -488,21 +488,45 @@ def _enqueue_voice(user, chat_id, voice_msg):
     )
 
 
+def _extract_voice(msg):
+    """Normalize a Telegram update message into the voice payload used below.
+
+    app.py passes the whole message, so the audio fields live under msg["voice"]
+    while the message context (id, reply-to, chat) is on the message itself.
+    """
+    v = msg.get("voice") or {}
+    return {
+        "file_id": v.get("file_id"),
+        "duration": v.get("duration"),
+        "mime_type": v.get("mime_type"),
+        "message_id": msg.get("message_id"),
+        "reply_to_message": msg.get("reply_to_message"),
+        "chat": msg.get("chat"),
+    }
+
+
 def _handle_voice(user, chat_id, voice_msg, group_id=None, target_date=None):
     if not config.VOICE_ENABLED:
         tg.send_message(chat_id, messages.VOICE_DISABLED)
+        return
+    file_id = (voice_msg or {}).get("file_id")
+    if not file_id:
+        print("voice failed: missing file_id in voice payload")
+        tg.send_message(chat_id, messages.TRANSCRIBE_FAILED)
         return
     target_date = target_date or _tomorrow()
     if group_id is None:
         group_id = _group_id_for_chat(user, chat_id)
     try:
-        transcript = voice.transcribe(voice_msg["file_id"])
-    except ai.AIRateLimited:
+        transcript = voice.transcribe(file_id)
+    except ai.AIRateLimited as e:
+        print(f"voice rate limited: {e}")
         if _enqueue_voice(user, chat_id, voice_msg):
             n = repo.count_pending_voices(user["id"], chat_id)
             _update_voice_status(user, chat_id, messages.TRANSCRIBE_BUSY.format(n=n))
         return
-    except (ai.AIError, voice.VoiceError, KeyError):
+    except (ai.AIError, voice.VoiceError) as e:
+        print(f"voice failed: {type(e).__name__}: {e}")
         tg.send_message(chat_id, messages.TRANSCRIBE_FAILED)
         return
     if not transcript:
@@ -516,16 +540,17 @@ def handle_private_voice(chat_id, tg_user, voice_msg):
     if not user:
         tg.send_message(chat_id, messages.NOT_AUTHORIZED)
         return
-    _handle_voice(user, chat_id, voice_msg)
+    _handle_voice(user, chat_id, _extract_voice(voice_msg))
 
 
-def handle_group_voice(chat_id, tg_user, voice_msg):
+def handle_group_voice(chat_id, tg_user, msg):
     if not config.is_allowed_group(chat_id):
         tg.send_message(chat_id, messages.group_not_allowed(chat_id))
         return
     if not config.is_allowed_user(tg_user["id"]):
         tg.send_message(chat_id, messages.USER_NOT_AUTHORIZED_GROUP)
         return
+    voice_msg = _extract_voice(msg)
     reply_from = (voice_msg.get("reply_to_message") or {}).get("from") or {}
     if not reply_from.get("is_bot"):
         return  # only group voice that replies to the bot is handled
@@ -547,7 +572,7 @@ def retry_voice(user, chat_id, tg_msg=None):
     pending = repo.list_pending_voices(user["id"], chat_id) or repo.list_pending_voices(user["id"])
     if not pending:
         if reply_voice:
-            _handle_voice(user, chat_id, reply_voice)
+            _handle_voice(user, chat_id, _extract_voice({"voice": reply_voice}))
             return
         tg.send_message(chat_id, messages.TRANSCRIBE_NONE_PENDING)
         return
@@ -562,11 +587,13 @@ def retry_voice(user, chat_id, tg_msg=None):
         origin_chat = row.get("chat_id") or chat_id
         try:
             transcript = voice.transcribe(st.get("file_id"))
-        except ai.AIRateLimited:
+        except ai.AIRateLimited as e:
+            print(f"voice retry rate limited: {e}")
             repo.set_state_status(row["id"], "queued")
             hit_limit = True
             break
-        except (ai.AIError, voice.VoiceError):
+        except (ai.AIError, voice.VoiceError) as e:
+            print(f"voice retry failed: {type(e).__name__}: {e}")
             repo.delete_state(row["id"])
             tg.send_message(origin_chat, messages.TRANSCRIBE_FAILED)
             continue

@@ -180,6 +180,7 @@ def transcribe(audio_bytes, mime_type="audio/ogg"):
         except AIRateLimited:
             raise
         except AIError as e:
+            print(f"transcribe model {model} failed: {e}")
             last_error = e
             continue
         if text:
