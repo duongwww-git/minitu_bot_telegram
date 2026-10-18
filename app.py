@@ -7,6 +7,8 @@ from fastapi import FastAPI, Request, HTTPException
 
 from lib import config, tg, handlers, digest, repo
 
+APP_VERSION = "0.2.0"
+
 app = FastAPI()
 
 
@@ -126,6 +128,9 @@ async def debug():
     from lib import config as cfg
 
     return {
+        "app_version": APP_VERSION,
+        "git_commit": (os.environ.get("VERCEL_GIT_COMMIT_SHA") or "")[:8],
+        "vercel_env": os.environ.get("VERCEL_ENV", ""),
         "webhook_secret_set": bool(cfg.WEBHOOK_SECRET),
         "webhook_secret_length": len(cfg.WEBHOOK_SECRET or ""),
         "bot_token_set": bool(cfg.BOT_TOKEN),
