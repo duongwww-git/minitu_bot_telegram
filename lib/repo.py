@@ -239,3 +239,87 @@ def get_state(state_id):
 def delete_state(state_id):
     db = _db()
     db.table("conversation_state").delete().eq("id", state_id).execute()
+
+
+def update_state_json(state_id, state):
+    db = _db()
+    db.table("conversation_state").update({"state": state}).eq("id", state_id).execute()
+
+
+def set_state_status(state_id, status):
+    row = get_state(state_id)
+    if not row:
+        return None
+    st = dict(row.get("state") or {})
+    st["status"] = status
+    update_state_json(state_id, st)
+    return st
+
+
+def cleanup_expired_states():
+    db = _db()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    res = db.table("conversation_state").delete().lt("expires_at", now_iso).execute()
+    return len(res.data or [])
+
+
+def delete_setting(key):
+    db = _db()
+    db.table("settings").delete().eq("key", key).execute()
+
+
+# -------- voice retry queue (reuses conversation_state) --------
+
+PENDING_VOICE_KIND = "pending_voice"
+
+
+def _state_expired(row):
+    try:
+        exp = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+        return exp < datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
+def enqueue_pending_voice(user_id, chat_id, file_id, message_id=None, duration=None, ttl_hours=None):
+    from lib.config import VOICE_RETRY_TTL_HOURS
+
+    ttl = ttl_hours or VOICE_RETRY_TTL_HOURS
+    state = {
+        "kind": PENDING_VOICE_KIND,
+        "file_id": file_id,
+        "message_id": message_id,
+        "duration": duration,
+        "status": "queued",
+    }
+    return create_state(user_id, chat_id, state, expires_minutes=int(ttl) * 60)
+
+
+def list_pending_voices(user_id, chat_id=None, include_processing=False):
+    """Pending voice rows for a user, oldest first."""
+    db = _db()
+    res = (
+        db.table("conversation_state")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at")
+        .execute()
+    )
+    out = []
+    for row in res.data or []:
+        st = row.get("state") or {}
+        if st.get("kind") != PENDING_VOICE_KIND:
+            continue
+        if chat_id is not None and row.get("chat_id") != chat_id:
+            continue
+        if not include_processing and st.get("status") == "processing":
+            continue
+        if _state_expired(row):
+            delete_state(row["id"])
+            continue
+        out.append(row)
+    return out
+
+
+def count_pending_voices(user_id, chat_id=None):
+    return len(list_pending_voices(user_id, chat_id))

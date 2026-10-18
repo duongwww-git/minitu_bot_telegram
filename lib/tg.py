@@ -40,11 +40,33 @@ def answer_callback_query(callback_query_id, text=None, show_alert=False):
     return _post("answerCallbackQuery", payload)
 
 
+def edit_message_text(chat_id, message_id, text, reply_markup=None, parse_mode=None):
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    return _post("editMessageText", payload)
+
+
 def delete_message(chat_id, message_id):
     try:
         _post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
     except Exception:
         pass
+
+
+def get_file_path(file_id):
+    result = _post("getFile", {"file_id": file_id})
+    return (result or {}).get("file_path")
+
+
+def download_file(file_path):
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN not configured")
+    r = httpx.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}", timeout=60)
+    r.raise_for_status()
+    return r.content
 
 
 def get_me():

@@ -1,4 +1,4 @@
-# V1 Setup Guide for Beginners
+# Setup Guide for Beginners
 
 This guide assumes you have never used Supabase, Vercel, or Telegram bots. Follow it in order. Do not skip steps.
 
@@ -123,6 +123,16 @@ Variables:
 10. `GROUP_TIMEZONE` = `Asia/Bangkok`
 11. `DIGEST_HOUR_LOCAL` = `6`
 
+Optional v2 (AI + voice) — add these only if you want Gemini features:
+
+12. `GEMINI_API_KEY` = API key from https://aistudio.google.com/apikey (free tier). Needed for voice; also enables AI text parsing.
+13. `AI_MODEL_TEXT` = `gemini-3.8-flash`
+14. `AI_MODEL_TRANSCRIBE` = `gemini-3.5-transcribe`
+15. `USE_AI` = `false` (set `true` to parse free text with Gemini; the rule parser is used otherwise)
+16. `VOICE_QUEUE_MAX` = `5`
+17. `VOICE_DRAIN_MAX` = `3`
+18. `VOICE_RETRY_TTL_HOURS` = `48`
+
 After adding all, go to `Deployments` -> click the three dots on latest deployment -> `Redeploy`. Confirm.
 
 ## Part 7: Register the webhook with Telegram
@@ -206,6 +216,27 @@ From now on:
 - Every evening, send tasks via DM using `/tomorrow ...` (or free text in DM).
 - Every morning at 6 AM (Vietnam time), the bot posts the digest in the group.
 
+## Part 12: Enable AI and voice (optional, v2)
+
+1. Get a Gemini API key:
+   - Open https://aistudio.google.com/apikey
+   - Sign in with a Google account, click `Create API key`, copy it.
+   - The free tier is enough for a 2-person bot (no credit card needed).
+2. In Vercel, add `GEMINI_API_KEY` (Part 6, step 12).
+3. To also let Gemini parse text tasks, set `USE_AI` = `true`. Leave it `false` to keep the rule-based parser (voice still works whenever `GEMINI_API_KEY` is set).
+4. Redeploy.
+5. Test voice: open a DM with the bot and send a voice note like "di gym luc 6 gio chieu nay".
+   - Expected: a reply starting with `📝 Transcript: ...` followed by the parsed task list and Save / Edit / Cancel.
+6. Test AI text: DM `USE_AI=true` and send free text, e.g. `mua sua, goi dien cho me`. Gemini parses it first; if it fails, the bot falls back to the rule parser.
+
+### What if transcription is busy (rate limit)?
+
+Gemini's free tier allows only a few requests per minute. If you send voice notes too quickly:
+
+- The bot replies: `Transcription is busy. Recordings saved: N. Tap Retry or send /retry.`
+- Your recordings are queued (up to 5). Tap the **🔁 Retry** button, or send `/retry`.
+- /retry also works while replying to a voice message, even if the queue expired.
+
 ## Common problems
 
 **Bot doesn't reply at all**
@@ -227,6 +258,11 @@ From now on:
   - No tasks or reminders for today.
   - `ALLOWED_GROUP_IDS` not set; bot doesn't know which group (check env).
 - Check Supabase `memberships` table to ensure both users are linked.
+
+**Voice note not transcribed**
+- `GEMINI_API_KEY` missing or wrong: the bot replies "Voice input isn't enabled on this bot". Add the key and redeploy.
+- Free-tier rate limit: the bot queues the note and shows a Retry button. Tap it or send `/retry` after a minute.
+- Never sends a transcript: the recording may be too long or quiet; try a shorter note.
 
 **Supabase seems "asleep"**
 - On free tier, projects may pause after inactivity. The daily cron pings the DB, which usually keeps it awake. If paused, open Supabase dashboard to wake it.

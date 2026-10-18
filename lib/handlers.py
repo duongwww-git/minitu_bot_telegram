@@ -4,7 +4,8 @@ from datetime import date, datetime, timedelta
 
 from zoneinfo import ZoneInfo
 
-from lib import config, tg, repo, parser
+from lib import ai, config, tg, repo, parser, voice
+from lib import messages
 
 
 def _tz():
@@ -88,22 +89,7 @@ def _norm_time(tok):
 
 
 def _help_text():
-    return (
-        "Task Reminder Bot (v1)\n\n"
-        "Commands:\n"
-        "/start - register\n"
-        "/join - link this group (run in group)\n"
-        "/add \"title\" HH:MM - add personal default reminder\n"
-        "/default list|add|remove - manage your defaults\n"
-        "/default shared list|add|remove - manage shared reminders (admin)\n"
-        "/tomorrow <tasks> - set tomorrow's tasks (semicolon/comma/newline separated, time optional)\n"
-        "/today - show today; /today <tasks> - set today's tasks\n"
-        "/list - show your defaults and tasks\n"
-        "/remove <id> - remove a reminder/task\n"
-        "/settings - admin info\n"
-        "/help - this message\n\n"
-        "Free text in DM is treated as tomorrow's task input."
-    )
+    return messages.help_text()
 
 
 def _send(chat_id, text, markup=None):
@@ -112,34 +98,35 @@ def _send(chat_id, text, markup=None):
         markup = None  # only first chunk gets buttons
 
 
-def start_task_input(user, chat_id, text, target_date, group_id):
-    tasks = parser.parse_tasks(text)
+def _parse_tasks(text):
+    """AI first (Slot A, when enabled), else fall back to the v1 rule parser."""
+    if config.AI_ENABLED:
+        tasks = ai.parse_tasks_ai(text)
+        if tasks:
+            return tasks
+    return parser.parse_tasks(text)
+
+
+def start_task_input(user, chat_id, text, target_date, group_id, transcript=None, label=None):
+    tasks = _parse_tasks(text)
     if not tasks:
-        tg.send_message(
-            chat_id,
-            "Couldn't parse any tasks. Example:\nfinish report; gym 18:00; call mom",
-        )
+        tg.send_message(chat_id, messages.COULD_NOT_PARSE)
         return
-    state = repo.create_state(
-        user["id"],
-        chat_id,
-        {"action": "confirm_tasks", "tasks": tasks, "target_date": target_date.isoformat(), "group_id": group_id},
-    )
+    state_payload = {
+        "action": "confirm_tasks",
+        "tasks": tasks,
+        "target_date": target_date.isoformat(),
+        "group_id": group_id,
+    }
+    if transcript:
+        state_payload["transcript"] = transcript
+    state = repo.create_state(user["id"], chat_id, state_payload)
     if not state:
         tg.send_message(chat_id, "Failed to create confirmation state. Try again.")
         return
     when = "today" if target_date == _today() else "tomorrow"
-    body = "I understood:\n" + parser.format_tasks(tasks) + f"\n\nSave for {when}?"
-    markup = {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Save", "callback_data": f"confirm:{state['id']}"},
-                {"text": "✏️ Edit", "callback_data": f"edit:{state['id']}"},
-                {"text": "❌ Cancel", "callback_data": f"cancel:{state['id']}"},
-            ]
-        ]
-    }
-    tg.send_message(chat_id, body, reply_markup=markup)
+    body = messages.confirm_prompt(parser.format_tasks(tasks), when, transcript=transcript, label=label)
+    tg.send_message(chat_id, body, reply_markup=messages.confirm_markup(state["id"]))
 
 
 def _handle_remove(user, id_str, chat_id, group_id=None):
@@ -178,13 +165,13 @@ def handle_command(cmd, args, user, chat_id, is_group=False, group_id=None):
     admin = _is_admin(user)
 
     if cmd == "/start":
-        if is_group and group_id:
-            g = repo.ensure_group(group_id, None)
+        if is_group and config.is_allowed_group(chat_id):
+            g = repo.ensure_group(chat_id, None)
             repo.link_membership(user["id"], g["id"])
         elif len(config.ALLOWED_GROUP_IDS) == 1:
             g = repo.ensure_group(config.ALLOWED_GROUP_IDS[0], None)
             repo.link_membership(user["id"], g["id"])
-        tg.send_message(chat_id, "Registered. " + ("Admin." if admin else "User.") + "\n\n" + _help_text())
+        tg.send_message(chat_id, messages.registered("Admin." if admin else "User.", _help_text()))
         return
 
     if cmd == "/help":
@@ -193,14 +180,14 @@ def handle_command(cmd, args, user, chat_id, is_group=False, group_id=None):
 
     if cmd == "/join":
         if not is_group:
-            tg.send_message(chat_id, "Run /join inside the group chat.")
+            tg.send_message(chat_id, messages.USAGE_JOIN_DM)
             return
         if not config.is_allowed_group(chat_id):
-            tg.send_message(chat_id, "This group is not allowed.")
+            tg.send_message(chat_id, messages.GROUP_NOT_ALLOWED)
             return
         g = repo.ensure_group(chat_id, None)
         repo.link_membership(user["id"], g["id"])
-        tg.send_message(chat_id, f"Linked to group {chat_id}.")
+        tg.send_message(chat_id, messages.linked_to_group(chat_id))
         return
 
     if cmd in ("/add",):
@@ -355,26 +342,32 @@ def handle_command(cmd, args, user, chat_id, is_group=False, group_id=None):
         if not admin:
             tg.send_message(chat_id, "Admin only.")
             return
-        msg = (
-            "Settings (v1 fixed):\n"
-            f"GROUP_TIMEZONE={config.GROUP_TIMEZONE}\n"
-            f"ALLOWED_USER_IDS={config.ALLOWED_USER_IDS}\n"
-            f"ALLOWED_GROUP_IDS={config.ALLOWED_GROUP_IDS}\n"
-            "Digest cron: 0 23 * * * UTC (=6AM GMT+7)\n"
+        tg.send_message(
+            chat_id,
+            messages.settings_text(
+                config.GROUP_TIMEZONE,
+                config.ALLOWED_USER_IDS,
+                config.ALLOWED_GROUP_IDS,
+                config.USE_AI,
+                config.AI_ENABLED,
+                config.VOICE_ENABLED,
+            ),
         )
-        tg.send_message(chat_id, msg)
         return
 
     tg.send_message(chat_id, "Unknown command. /help")
 
 
-def handle_private_message(chat_id, tg_user, text):
+def handle_private_message(chat_id, tg_user, text, tg_msg=None):
     user = _auth_user(tg_user)
     if not user:
-        tg.send_message(chat_id, "Not authorized.")
+        tg.send_message(chat_id, messages.NOT_AUTHORIZED)
         return
     cmd, args = parse_command(text)
     if cmd:
+        if cmd == "/retry":
+            retry_voice(user, chat_id, tg_msg)
+            return
         handle_command(cmd, args, user, chat_id, is_group=False, group_id=None)
         return
     # free text -> tomorrow input
@@ -401,13 +394,10 @@ def _bot_mentioned(text):
 
 def handle_group_message(chat_id, tg_user, text, msg):
     if not config.is_allowed_group(chat_id):
-        tg.send_message(
-            chat_id,
-            f"This group isn't allow-listed (ID: {chat_id}). Ask admin to update ALLOWED_GROUP_IDS in Vercel, then redeploy.",
-        )
+        tg.send_message(chat_id, messages.group_not_allowed(chat_id))
         return
     if not config.is_allowed_user(tg_user["id"]):
-        tg.send_message(chat_id, "You aren't authorized to use this bot.")
+        tg.send_message(chat_id, messages.USER_NOT_AUTHORIZED_GROUP)
         return
     user = _auth_user(tg_user)
     if not user:
@@ -418,6 +408,9 @@ def handle_group_message(chat_id, tg_user, text, msg):
 
     cmd, args = parse_command(text)
     if cmd:
+        if cmd == "/retry":
+            retry_voice(user, chat_id, msg)
+            return
         handle_command(cmd, args, user, chat_id, is_group=True, group_id=group_id)
         return
 
@@ -430,9 +423,176 @@ def handle_group_message(chat_id, tg_user, text, msg):
 
     text_to_parse = cleaned if cleaned else text
     if not text_to_parse.strip():
-        tg.send_message(chat_id, "Send tasks after mentioning me, e.g. @bot tomorrow gym 6pm; report")
+        tg.send_message(chat_id, messages.TASKS_AFTER_MENTION)
         return
     start_task_input(user, chat_id, text_to_parse, _tomorrow(), group_id)
+
+
+# -------- v2: voice input (Slot B) + retry queue --------
+
+
+def _group_id_for_chat(user, chat_id):
+    group = repo.get_group_by_tg(chat_id)
+    if group:
+        return group["id"]
+    return _primary_group_id(user["id"])
+
+
+def _voice_status_key(user_id):
+    return f"voice_status:{user_id}"
+
+
+def _voice_status_ref(user_id):
+    raw = repo.get_setting(_voice_status_key(user_id))
+    if not raw:
+        return None
+    try:
+        chat_id, message_id = str(raw).split(":", 1)
+        return int(chat_id), int(message_id)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _update_voice_status(user, chat_id, text):
+    """Show/refresh the single retry status message (edit in place, no spam)."""
+    ref = _voice_status_ref(user["id"])
+    if ref and ref[0] == chat_id:
+        try:
+            tg.edit_message_text(ref[0], ref[1], text, reply_markup=messages.retry_markup())
+            return
+        except Exception:
+            pass
+    result = tg.send_message(chat_id, text, reply_markup=messages.retry_markup())
+    if result and result.get("message_id"):
+        repo.set_setting(_voice_status_key(user["id"]), f"{chat_id}:{result['message_id']}")
+
+
+def _clear_voice_status(user, delete_message=False):
+    ref = _voice_status_ref(user["id"])
+    if ref and delete_message:
+        tg.delete_message(ref[0], ref[1])
+    repo.delete_setting(_voice_status_key(user["id"]))
+
+
+def _enqueue_voice(user, chat_id, voice_msg):
+    count = repo.count_pending_voices(user["id"], chat_id)
+    if count >= config.VOICE_QUEUE_MAX:
+        tg.send_message(chat_id, messages.TRANSCRIBE_QUEUE_FULL.format(n=count))
+        return None
+    return repo.enqueue_pending_voice(
+        user["id"],
+        chat_id,
+        voice_msg.get("file_id"),
+        message_id=voice_msg.get("message_id"),
+        duration=voice_msg.get("duration"),
+    )
+
+
+def _handle_voice(user, chat_id, voice_msg, group_id=None, target_date=None):
+    if not config.VOICE_ENABLED:
+        tg.send_message(chat_id, messages.VOICE_DISABLED)
+        return
+    target_date = target_date or _tomorrow()
+    if group_id is None:
+        group_id = _group_id_for_chat(user, chat_id)
+    try:
+        transcript = voice.transcribe(voice_msg["file_id"])
+    except ai.AIRateLimited:
+        if _enqueue_voice(user, chat_id, voice_msg):
+            n = repo.count_pending_voices(user["id"], chat_id)
+            _update_voice_status(user, chat_id, messages.TRANSCRIBE_BUSY.format(n=n))
+        return
+    except (ai.AIError, voice.VoiceError, KeyError):
+        tg.send_message(chat_id, messages.TRANSCRIBE_FAILED)
+        return
+    if not transcript:
+        tg.send_message(chat_id, messages.TRANSCRIBE_EMPTY)
+        return
+    start_task_input(user, chat_id, transcript, target_date, group_id, transcript=transcript)
+
+
+def handle_private_voice(chat_id, tg_user, voice_msg):
+    user = _auth_user(tg_user)
+    if not user:
+        tg.send_message(chat_id, messages.NOT_AUTHORIZED)
+        return
+    _handle_voice(user, chat_id, voice_msg)
+
+
+def handle_group_voice(chat_id, tg_user, voice_msg):
+    if not config.is_allowed_group(chat_id):
+        tg.send_message(chat_id, messages.group_not_allowed(chat_id))
+        return
+    if not config.is_allowed_user(tg_user["id"]):
+        tg.send_message(chat_id, messages.USER_NOT_AUTHORIZED_GROUP)
+        return
+    reply_from = (voice_msg.get("reply_to_message") or {}).get("from") or {}
+    if not reply_from.get("is_bot"):
+        return  # only group voice that replies to the bot is handled
+    user = _auth_user(tg_user)
+    if not user:
+        return
+    group = repo.ensure_group(chat_id, (voice_msg.get("chat") or {}).get("title"))
+    repo.link_membership(user["id"], group["id"])
+    _handle_voice(user, chat_id, voice_msg, group_id=group["id"])
+
+
+def retry_voice(user, chat_id, tg_msg=None):
+    """Drain the user's voice queue oldest -> newest (cap VOICE_DRAIN_MAX)."""
+    if not config.VOICE_ENABLED:
+        tg.send_message(chat_id, messages.VOICE_DISABLED)
+        return
+    reply_voice = ((tg_msg or {}).get("reply_to_message") or {}).get("voice")
+
+    pending = repo.list_pending_voices(user["id"], chat_id) or repo.list_pending_voices(user["id"])
+    if not pending:
+        if reply_voice:
+            _handle_voice(user, chat_id, reply_voice)
+            return
+        tg.send_message(chat_id, messages.TRANSCRIBE_NONE_PENDING)
+        return
+
+    total = len(pending)
+    processed = 0
+    hit_limit = False
+    for i, row in enumerate(pending[: config.VOICE_DRAIN_MAX], 1):
+        st = repo.set_state_status(row["id"], "processing")
+        if not st:
+            continue
+        origin_chat = row.get("chat_id") or chat_id
+        try:
+            transcript = voice.transcribe(st.get("file_id"))
+        except ai.AIRateLimited:
+            repo.set_state_status(row["id"], "queued")
+            hit_limit = True
+            break
+        except (ai.AIError, voice.VoiceError):
+            repo.delete_state(row["id"])
+            tg.send_message(origin_chat, messages.TRANSCRIBE_FAILED)
+            continue
+        repo.delete_state(row["id"])
+        processed += 1
+        if not transcript:
+            tg.send_message(origin_chat, messages.TRANSCRIBE_EMPTY)
+            continue
+        start_task_input(
+            user,
+            origin_chat,
+            transcript,
+            _tomorrow(),
+            _group_id_for_chat(user, origin_chat),
+            transcript=transcript,
+            label=messages.RECORDING_LABEL.format(i=i, n=total),
+        )
+
+    remaining = repo.count_pending_voices(user["id"])
+    if remaining > 0:
+        if processed == 0 and hit_limit:
+            _update_voice_status(user, chat_id, messages.TRANSCRIBE_BUSY.format(n=remaining))
+        else:
+            _update_voice_status(user, chat_id, messages.TRANSCRIBE_PARTIAL.format(ok=processed, n=total))
+    else:
+        _clear_voice_status(user, delete_message=True)
 
 
 def handle_callback(callback_query):
@@ -447,8 +607,12 @@ def handle_callback(callback_query):
         tg.answer_callback_query(cq_id, "Not authorized.", show_alert=True)
         return
     data = callback_query.get("data") or ""
-    msg = callback_query.get("message") or {}
-    chat_id = (msg.get("chat") or {}).get("id")
+    cb_msg = callback_query.get("message") or {}
+    chat_id = (cb_msg.get("chat") or {}).get("id")
+    if data == "retry:pending":
+        tg.answer_callback_query(cq_id, "Retrying...")
+        retry_voice(user, chat_id, None)
+        return
     if ":" not in data:
         tg.answer_callback_query(cq_id)
         return

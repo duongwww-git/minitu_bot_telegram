@@ -19,7 +19,7 @@ def _verify_webhook(request: Request):
 
 @app.get("/api/webhook")
 async def webhook_health():
-    return {"ok": True, "service": "ai-agent-reminder v1"}
+    return {"ok": True, "service": "ai-agent-reminder v2"}
 
 
 @app.post("/api/webhook")
@@ -39,11 +39,17 @@ async def webhook(request: Request):
             chat_id = chat.get("id")
             chat_type = chat.get("type", "private")
             tg_user = msg.get("from", {})
-            text = (msg.get("text") or "").strip()
-            if chat_type == "private":
-                handlers.handle_private_message(chat_id, tg_user, text)
+            if msg.get("voice"):
+                if chat_type == "private":
+                    handlers.handle_private_voice(chat_id, tg_user, msg)
+                else:
+                    handlers.handle_group_voice(chat_id, tg_user, msg)
             else:
-                handlers.handle_group_message(chat_id, tg_user, text, msg)
+                text = (msg.get("text") or "").strip()
+                if chat_type == "private":
+                    handlers.handle_private_message(chat_id, tg_user, text, msg)
+                else:
+                    handlers.handle_group_message(chat_id, tg_user, text, msg)
     except Exception as e:
         print(f"webhook error: {repr(e)}")
     return {"ok": True}
@@ -93,7 +99,21 @@ async def cron(request: Request):
         except Exception as e:
             resp_text = getattr(getattr(e, 'response', None), 'text', None)
             errors.append(f"group_id={g.get('tg_group_id')}: {repr(e)} | body={resp_text}")
-    return {"ok": True, "today_local": today_local, "sent": sent, "skipped": skipped, "errors": errors}
+
+    cleaned = 0
+    try:
+        cleaned = repo.cleanup_expired_states()
+    except Exception as e:
+        errors.append(f"cleanup: {repr(e)}")
+
+    return {
+        "ok": True,
+        "today_local": today_local,
+        "sent": sent,
+        "skipped": skipped,
+        "cleaned_states": cleaned,
+        "errors": errors,
+    }
 
 
 @app.get("/api/health")
@@ -114,4 +134,11 @@ async def debug():
         "allowed_users": cfg.ALLOWED_USER_IDS,
         "allowed_groups": cfg.ALLOWED_GROUP_IDS,
         "admin": cfg.ADMIN_USER_ID,
+        "use_ai": cfg.USE_AI,
+        "ai_enabled": cfg.AI_ENABLED,
+        "voice_enabled": cfg.VOICE_ENABLED,
+        "gemini_key_set": bool(cfg.GEMINI_API_KEY),
+        "ai_model_text": cfg.AI_MODEL_TEXT,
+        "ai_model_transcribe": cfg.AI_MODEL_TRANSCRIBE,
+        "voice_queue_max": cfg.VOICE_QUEUE_MAX,
     }

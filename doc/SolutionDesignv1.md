@@ -34,6 +34,73 @@ Data flow (input): Partner DMs free text → webhook → auth check → parse �
 
 Data flow (digest): Cron → GET /api/cron?secret=… → gather defaults/today tasks → build digest text → sendMessage to group chat → idempotency guard (last_digest_date).
 
+## 3.1 Architecture Diagram
+
+```mermaid
+graph TD
+    subgraph External["External Systems"]
+        TG_API[Telegram Bot API]
+        Admin[Admin User]
+        Partner[Partner User]
+        Group[Shared Group Chat]
+    end
+
+    subgraph Vercel["Vercel (Python 3.11)"]
+        subgraph API["api/"]
+            WH[api/webhook.py<br/>POST /api/webhook]
+            CRON[api/cron.py<br/>GET /api/cron]
+        end
+        subgraph Lib["lib/"]
+            Config[lib/config.py<br/>Env vars + secrets]
+            DB[lib/db.py<br/>Supabase client]
+            Users[lib/users.py<br/>Upsert users + memberships]
+            Parser[lib/parser.py<br/>Rule-based parser]
+            Handlers[lib/handlers.py<br/>Command + free-text handlers]
+            Digest[lib/digest.py<br/>Group digest builder]
+            TG[lib/tg.py<br/>Send helpers + 4096 chunking]
+        end
+    end
+
+    subgraph Supabase["Supabase Free Postgres"]
+        U[users]
+        G[groups]
+        M[memberships]
+        R[reminders]
+        DT[daily_tasks]
+        S[settings]
+    end
+
+    Admin -->|DM| TG_API
+    Partner -->|DM| TG_API
+    Group -->|Messages| TG_API
+    TG_API <-->|webhook updates| WH
+    TG_API <-->|sendMessage| TG
+
+    WH --> Handlers
+    WH --> Config
+    CRON --> Digest
+    CRON --> Config
+    Handlers --> Config
+    Handlers --> Parser
+    Handlers --> Users
+    Handlers --> DB
+    Parser --> Handlers
+    Digest --> DB
+    Digest --> TG
+    Users --> DB
+    DB --> Supabase
+
+    U -.-> M
+    G -.-> M
+    R -.-> U
+    DT -.-> U
+    S -.->|last_digest_date guard| CRON
+
+    style External fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    style Vercel fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style Supabase fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+```
+
 ## 4. Tech stack (free)
 
 - Runtime: Python 3.11
@@ -131,10 +198,10 @@ Notes: shared group reminders have `user_id = null`.
 |---|---|---|---|
 | /start | both | DM | Register user (upsert users + memberships), show help |
 | /join | both | group | Link membership for that group |
-| /add <title> <HH:MM> [daily] | both | DM/group | Add personal default reminder |
+| /add `<title> <HH:MM>` [daily] | both | DM/group | Add personal default reminder |
 | /default add/remove/list | both | DM | Manage per-user defaults |
 | /default shared ... | admin | DM/group | Manage shared group reminders |
-| /tomorrow <text> | both | DM (preferred) | Replace/add tasks for next day |
+| /tomorrow `<text>` | both | DM (preferred) | Replace/add tasks for next day |
 | /today | both | DM/group | Show today's tasks |
 | /list | both | DM | List defaults + today (admin sees all) |
 | /settings | admin | DM | Set digest time, allowlists display |
@@ -190,6 +257,36 @@ Time normalization uses admin's configured timezone display but stored as `time_
 7. `Cancel`: discard.
 8. Re-running `/tomorrow` replaces prior candidates? V1: append; admin can delete via `/list` + `/remove`. (Simpler: append.)
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User (Admin/Partner)
+    participant TG as Telegram Bot API
+    participant WH as api/webhook.py
+    participant H as lib/handlers.py
+    participant C as lib/config.py
+    participant P as lib/parser.py
+    participant DB as Supabase Postgres
+
+    U->>TG: DM free text (e.g. "gym 18:00")
+    TG->>WH: webhook POST (X-Telegram-Bot-Api-Secret-Token)
+    WH->>H: route update
+    H->>C: check ALLOWED_USER_IDS
+    C-->>H: authorized?
+
+    alt authorized
+        H->>P: parse free text
+        P-->>H: candidate tasks [{title, time_of_day}]
+        H->>U: reply with candidates + [Yes / Edit / Cancel]
+        U->>H: confirm "Yes"
+        H->>DB: INSERT daily_tasks (for_date = tomorrow GMT+7)
+        DB-->>H: row inserted
+        H->>TG: reply "N tasks saved"
+    else not authorized
+        H->>TG: "Not authorized"
+    end
+```
+
 ## 12. Digest flow
 
 Trigger: Vercel Cron `0 23 * * *` → GET `/api/cron?secret=CRON_SECRET`.
@@ -223,6 +320,46 @@ Trigger: Vercel Cron `0 23 * * *` → GET `/api/cron?secret=CRON_SECRET`.
    - `sendMessage` to `tg_group_id`.
    - On success set `last_digest_date = today`.
 3. Return 200 with summary counts; on partial failure return 207/500 and log.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant VC as Vercel Cron (0 23 * * *)
+    participant CRON as api/cron.py
+    participant C as lib/config.py
+    participant D as lib/digest.py
+    participant DB as Supabase Postgres
+    participant TG as lib/tg.py
+    participant TBA as Telegram Bot API
+    participant GC as Shared Group Chat
+
+    VC->>CRON: GET /api/cron?secret=CRON_SECRET
+    CRON->>C: validate CRON_SECRET
+    C-->>CRON: valid?
+
+    alt valid
+        CRON->>D: build digest for today (GMT+7)
+        D->>DB: read settings.last_digest_date
+        alt digest already sent today
+            D-->>CRON: skip (idempotency)
+            CRON-->>VC: 200 skipped
+        else not sent today
+            D->>DB: gather defaults + daily_tasks + shared reminders
+            DB-->>D: task rows
+            D->>D: build digest text
+            D->>TG: sendMessage to group (chunk if >4096 chars)
+            TG->>TBA: POST sendMessage
+            TBA->>GC: deliver digest
+            TBA-->>TG: ok
+            TG-->>D: sent
+            D->>DB: UPDATE settings.last_digest_date = today
+            DB-->>D: updated
+            CRON-->>VC: 200 summary counts
+        end
+    else invalid
+        CRON-->>VC: 401/403
+    end
+```
 
 Retry: if send fails, next day's cron does not retry prior day (V1). Acceptable for personal use. Optional V2: retry window within same day.
 

@@ -1,7 +1,7 @@
 [project]
 name = "telegram-reminder-bot"
-version = "0.1.0"
-description = "Personal Telegram reminder agent (v1)"
+version = "0.2.0"
+description = "Personal Telegram reminder agent (v2: Gemini text + voice)"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.110",
