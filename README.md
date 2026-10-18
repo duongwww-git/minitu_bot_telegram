@@ -39,6 +39,21 @@ uvicorn app:app --reload --port 8000
 Cron endpoint can be triggered manually:
 `curl -H "Authorization: Bearer $CRON_SECRET" https://<deployment>/api/cron`
 
+## Configuration
+
+Two kinds of settings:
+
+- **Secrets** (`BOT_TOKEN`, `WEBHOOK_SECRET`, `CRON_SECRET`, `SUPABASE_URL`,
+  `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`) — env vars only, never committed.
+- **Non-secret tunables** (`AI_MODEL_TEXT`, `AI_MODEL_TRANSCRIBE`, `USE_AI`,
+  `VOICE_QUEUE_MAX`, `VOICE_DRAIN_MAX`, `VOICE_RETRY_TTL_HOURS`,
+  `GROUP_TIMEZONE`, `DIGEST_HOUR_LOCAL`) — defaults live in the committed
+  `config.defaults.json`. Edit that file instead of Vercel.
+
+Precedence: **env var > `config.defaults.json` > built-in default**. So a Vercel
+env var still overrides the file when needed. `/api/debug` reports
+`config_file_loaded` plus the effective AI/voice settings.
+
 ## AI / voice notes
 
 - `USE_AI=false` (default) preserves the v1 rule-based behavior exactly.

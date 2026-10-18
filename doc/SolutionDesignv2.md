@@ -112,17 +112,25 @@ Source: https://ai.google.dev/gemini-api/docs/pricing (Free Tier column = "Free 
 - Caveats: Pro models are not on the free tier; free-tier content may be used to improve Google
   products; limits change over time — verify live numbers in AI Studio → Rate limits.
 
-### 6.3 Env vars & flags
+### 6.3 Config & flags
 
+Secrets are env vars only: `GEMINI_API_KEY`.
+
+Non-secret tunables default to the committed `config.defaults.json`:
+
+```json
+{
+  "AI_MODEL_TEXT": "gemini-3.8-flash",
+  "AI_MODEL_TRANSCRIBE": "gemini-3.5-transcribe",
+  "USE_AI": false,
+  "VOICE_QUEUE_MAX": 5,
+  "VOICE_DRAIN_MAX": 3,
+  "VOICE_RETRY_TTL_HOURS": 48
+}
 ```
-GEMINI_API_KEY=
-AI_MODEL_TEXT=gemini-3.8-flash
-AI_MODEL_TRANSCRIBE=gemini-3.5-transcribe
-USE_AI=false                    # off by default; rule parser stays the default path
-VOICE_QUEUE_MAX=5
-VOICE_DRAIN_MAX=3
-VOICE_RETRY_TTL_HOURS=48
-```
+
+Precedence: env var > `config.defaults.json` > built-in default. `/api/debug` reports the
+effective values plus `config_file_loaded`.
 
 Fallback: any AI failure/timeout/invalid JSON → V1 rule parser. `USE_AI=false` preserves the
 $0 rule-based behavior exactly.

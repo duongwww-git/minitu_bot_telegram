@@ -1,0 +1,11 @@
+{
+  "_comment": "Non-secret, tunable config committed to the repo. Edit here instead of Vercel. A Vercel env var with the same name overrides this file.",
+  "GROUP_TIMEZONE": "Asia/Bangkok",
+  "DIGEST_HOUR_LOCAL": 6,
+  "AI_MODEL_TEXT": "gemini-3.8-flash",
+  "AI_MODEL_TRANSCRIBE": "gemini-3.5-transcribe",
+  "USE_AI": false,
+  "VOICE_QUEUE_MAX": 5,
+  "VOICE_DRAIN_MAX": 3,
+  "VOICE_RETRY_TTL_HOURS": 48
+}

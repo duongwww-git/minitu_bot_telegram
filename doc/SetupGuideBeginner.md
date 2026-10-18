@@ -124,15 +124,17 @@ Variables:
 10. `GROUP_TIMEZONE` = `Asia/Bangkok`
 11. `DIGEST_HOUR_LOCAL` = `6`
 
-Optional v2 (AI + voice) — add these only if you want Gemini features (full walkthrough in Part 12):
+Optional v2 (AI + voice). Only `GEMINI_API_KEY` is needed here — the model names
+and limits are non-secret and already set in the committed `config.defaults.json`.
+See Part 12 for the full walkthrough.
 
-12. `GEMINI_API_KEY` = API key from https://aistudio.google.com/apikey (free tier, no credit card). Needed for voice; also enables AI text parsing. Full walkthrough in Part 12A.
-13. `AI_MODEL_TEXT` = `gemini-3.8-flash`
-14. `AI_MODEL_TRANSCRIBE` = `gemini-3.5-transcribe`
-15. `USE_AI` = `false` (set `true` to parse free text with Gemini; the rule parser is used otherwise)
-16. `VOICE_QUEUE_MAX` = `5`
-17. `VOICE_DRAIN_MAX` = `3`
-18. `VOICE_RETRY_TTL_HOURS` = `48`
+12. `GEMINI_API_KEY` = API key from https://aistudio.google.com/apikey (free tier, no credit card). Needed for voice; also enables AI text parsing when `USE_AI` is on.
+
+You do **not** need to add the other v2 variables (`AI_MODEL_TEXT`,
+`AI_MODEL_TRANSCRIBE`, `USE_AI`, `VOICE_QUEUE_MAX`, `VOICE_DRAIN_MAX`,
+`VOICE_RETRY_TTL_HOURS`) to Vercel: they have defaults in
+`config.defaults.json`. Add a Vercel env var with the same name only if you want
+to override one (Part 12B shows how).
 
 After adding all, go to `Deployments` -> click the three dots on latest deployment -> `Redeploy`. Confirm.
 
@@ -261,13 +263,19 @@ Gotchas:
    - **Value**: paste the `AIza...` key from Part 12A
    - **Environments**: tick **Production** (and Preview if you like)
    - Click **Save**.
-4. (Optional) Add the other v2 variables while you are here — the defaults below are fine:
+4. (Optional) The other v2 variables are **not secrets**, so you normally don't add them here — the committed `config.defaults.json` already sets:
    - `AI_MODEL_TEXT` = `gemini-3.8-flash`
    - `AI_MODEL_TRANSCRIBE` = `gemini-3.5-transcribe`
-   - `USE_AI` = `true` to enable AI text parsing, or `false` to keep the rule parser (voice works either way)
-   - `VOICE_QUEUE_MAX` = `5`
-   - `VOICE_DRAIN_MAX` = `3`
-   - `VOICE_RETRY_TTL_HOURS` = `48`
+   - `USE_AI` = `false` (rule parser stays the default)
+   - `VOICE_QUEUE_MAX` = `5`, `VOICE_DRAIN_MAX` = `3`, `VOICE_RETRY_TTL_HOURS` = `48`
+
+   To change one permanently, edit `config.defaults.json` and commit (Vercel redeploys automatically). To override just for this deployment, add a Vercel env var with the same name instead — an env var wins over the file.
+
+   **To turn on AI text parsing**, do one of:
+   - set `"USE_AI": true` in `config.defaults.json` and commit, or
+   - add a Vercel env var `USE_AI` = `true`,
+
+   then redeploy. (Voice notes work either way, as long as `GEMINI_API_KEY` is set.)
 5. Redeploy so the new variables take effect:
    - Go to **Deployments** → click the three dots (`...`) on the latest deployment → **Redeploy** → confirm.
    - Vercel only applies environment changes to a **new** deployment.
@@ -280,9 +288,10 @@ Gotchas:
    Look for:
    - `"gemini_key_set": true`
    - `"voice_enabled": true`
-   - `"use_ai": true` (only if you set `USE_AI=true`)
+   - `"use_ai": true` (only if you turned AI parsing on)
+   - `"config_file_loaded": true` (confirms `config.defaults.json` was read)
 
-   If `gemini_key_set` is `false`, the variable name is misspelled, or the redeploy hasn't finished.
+   If `gemini_key_set` is `false`, the variable name is misspelled, or the redeploy hasn't finished. If `config_file_loaded` is `false`, redeploy so `config.defaults.json` is included in the build.
 
 ### Test it
 

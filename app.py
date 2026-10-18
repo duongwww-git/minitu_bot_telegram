@@ -141,4 +141,5 @@ async def debug():
         "ai_model_text": cfg.AI_MODEL_TEXT,
         "ai_model_transcribe": cfg.AI_MODEL_TRANSCRIBE,
         "voice_queue_max": cfg.VOICE_QUEUE_MAX,
+        "config_file_loaded": cfg.config_file_loaded(),
     }
