@@ -4,7 +4,7 @@
   "DIGEST_HOUR_LOCAL": 6,
   "AI_MODEL_TEXT": "gemini-3.8-flash",
   "AI_MODEL_TRANSCRIBE": "gemini-3.5-transcribe",
-  "USE_AI": false,
+  "USE_AI": true,
   "VOICE_QUEUE_MAX": 5,
   "VOICE_DRAIN_MAX": 3,
   "VOICE_RETRY_TTL_HOURS": 48
