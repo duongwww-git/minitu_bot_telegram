@@ -7,6 +7,7 @@ This guide assumes you have never used Supabase, Vercel, or Telegram bots. Follo
 - A Telegram bot in a private 2-person group.
 - Every morning at 6:00 AM (Vietnam time) it posts everyone's tasks in the group.
 - You (admin) manage defaults; your partner sends their tasks by DM to the bot.
+- Optional (v2, Part 12): add tasks by voice note or natural language, using Google Gemini (free tier).
 - Cost: $0.
 
 ## Part 1: Get your Telegram user ID
@@ -123,9 +124,9 @@ Variables:
 10. `GROUP_TIMEZONE` = `Asia/Bangkok`
 11. `DIGEST_HOUR_LOCAL` = `6`
 
-Optional v2 (AI + voice) — add these only if you want Gemini features:
+Optional v2 (AI + voice) — add these only if you want Gemini features (full walkthrough in Part 12):
 
-12. `GEMINI_API_KEY` = API key from https://aistudio.google.com/apikey (free tier). Needed for voice; also enables AI text parsing.
+12. `GEMINI_API_KEY` = API key from https://aistudio.google.com/apikey (free tier, no credit card). Needed for voice; also enables AI text parsing. Full walkthrough in Part 12A.
 13. `AI_MODEL_TEXT` = `gemini-3.8-flash`
 14. `AI_MODEL_TRANSCRIBE` = `gemini-3.5-transcribe`
 15. `USE_AI` = `false` (set `true` to parse free text with Gemini; the rule parser is used otherwise)
@@ -218,24 +219,87 @@ From now on:
 
 ## Part 12: Enable AI and voice (optional, v2)
 
-1. Get a Gemini API key:
-   - Open https://aistudio.google.com/apikey
-   - Sign in with a Google account, click `Create API key`, copy it.
-   - The free tier is enough for a 2-person bot (no credit card needed).
-2. In Vercel, add `GEMINI_API_KEY` (Part 6, step 12).
-3. To also let Gemini parse text tasks, set `USE_AI` = `true`. Leave it `false` to keep the rule-based parser (voice still works whenever `GEMINI_API_KEY` is set).
-4. Redeploy.
-5. Test voice: open a DM with the bot and send a voice note like "di gym luc 6 gio chieu nay".
-   - Expected: a reply starting with `📝 Transcript: ...` followed by the parsed task list and Save / Edit / Cancel.
-6. Test AI text: DM `USE_AI=true` and send free text, e.g. `mua sua, goi dien cho me`. Gemini parses it first; if it fails, the bot falls back to the rule parser.
+This part is optional — skip it if you only want the rule-based bot from Parts 1–11.
 
-### What if transcription is busy (rate limit)?
+With Gemini enabled you get:
 
-Gemini's free tier allows only a few requests per minute. If you send voice notes too quickly:
+- **Voice input**: send a voice note in DM and the bot turns it into tasks.
+- **Smarter text parsing** (only when `USE_AI=true`): free text like `mua sua, goi dien cho me chieu nay` is parsed by AI, with the rule parser as a fallback.
+
+Cost: **$0** at this scale. The Gemini free tier does not require a credit card.
+
+### Part 12A: Get your GEMINI_API_KEY
+
+You create the key in **Google AI Studio**, Google's free developer console for Gemini.
+
+1. Open a browser and go to: https://aistudio.google.com/apikey
+2. Sign in with any Google account (a normal Gmail works).
+   - First time only: accept the terms of service if a dialog appears.
+3. Click **Create API key** (top right; it may say **Get API key** first).
+4. If it asks you to choose a Google Cloud project:
+   - Choose **Create new project**.
+   - Name it something like `minitu-bot`, then confirm.
+   - Wait a few seconds while Google creates it.
+5. A key appears, starting with `AIza...` (about 39 characters). Click **Copy**.
+   - Save it somewhere safe immediately — a password manager, or a private note. Treat it like a password.
+   - ⚠️ Vercel masks the value after saving and cannot show it again. If you lose it, you'll create a new key (this page), not recover the old one.
+6. Optional: confirm you are on the free tier. The same page shows rate limits. At the time of writing, the free tier covers Flash and Transcribe models at roughly **10–15 requests per minute** — far more than two people will ever use.
+
+Gotchas:
+
+- Never paste the key into a group chat, GitHub, a screenshot, or this repo. If it leaks, delete it on this page and create a new one.
+- If **Create API key** is greyed out, make sure you are on the **API keys** page (the link above), not on AI Studio's chat page.
+- If your Google account is managed by a workplace or school, your admin may block API keys. Use a personal Gmail account instead.
+- If Google asks for a credit card, you went to the paid Google Cloud console. Go back to the AI Studio link above — no billing is needed.
+
+### Part 12B: Add the key to Vercel
+
+1. Open https://vercel.com and select your bot project.
+2. Go to **Settings** (top menu) → **Environment Variables** (left sidebar).
+3. Add the key:
+   - **Key**: `GEMINI_API_KEY`
+   - **Value**: paste the `AIza...` key from Part 12A
+   - **Environments**: tick **Production** (and Preview if you like)
+   - Click **Save**.
+4. (Optional) Add the other v2 variables while you are here — the defaults below are fine:
+   - `AI_MODEL_TEXT` = `gemini-3.8-flash`
+   - `AI_MODEL_TRANSCRIBE` = `gemini-3.5-transcribe`
+   - `USE_AI` = `true` to enable AI text parsing, or `false` to keep the rule parser (voice works either way)
+   - `VOICE_QUEUE_MAX` = `5`
+   - `VOICE_DRAIN_MAX` = `3`
+   - `VOICE_RETRY_TTL_HOURS` = `48`
+5. Redeploy so the new variables take effect:
+   - Go to **Deployments** → click the three dots (`...`) on the latest deployment → **Redeploy** → confirm.
+   - Vercel only applies environment changes to a **new** deployment.
+6. Verify the key loaded. In Terminal, run (replace with your URL):
+
+   ```bash
+   curl "https://YOUR-VERCEL-URL.vercel.app/api/debug"
+   ```
+
+   Look for:
+   - `"gemini_key_set": true`
+   - `"voice_enabled": true`
+   - `"use_ai": true` (only if you set `USE_AI=true`)
+
+   If `gemini_key_set` is `false`, the variable name is misspelled, or the redeploy hasn't finished.
+
+### Test it
+
+1. Open a DM with your bot and send a voice note, e.g. "di gym luc 6 gio chieu nay".
+   - Expected: a reply starting with `📝 Transcript: ...`, then the parsed task list with **Save / Edit / Cancel**.
+2. If you set `USE_AI=true`, send a normal DM message, e.g. `mua sua, goi dien cho me`.
+   - Expected: Gemini parses it first; if the AI call fails, the bot still replies using the rule parser.
+3. In the group, voice notes are only read when you **reply to one of the bot's messages** (so ordinary group chatter isn't transcribed). DMs always work.
+
+### What if transcription is busy (free-tier rate limit)?
+
+The Gemini free tier allows only a few requests per minute. If you send voice notes too quickly:
 
 - The bot replies: `Transcription is busy. Recordings saved: N. Tap Retry or send /retry.`
 - Your recordings are queued (up to 5). Tap the **🔁 Retry** button, or send `/retry`.
-- /retry also works while replying to a voice message, even if the queue expired.
+- `/retry` also works while replying to a voice message, even after the queue expired.
+- Nothing is lost: the bot keeps a reference to each recording for 48 hours, so you never have to re-send the audio.
 
 ## Common problems
 
