@@ -65,6 +65,8 @@ HELP_BODY = (
     "/help - this message\n\n"
     "Free text in DM is treated as tomorrow's task input unless you name a day:\n"
     "\"today gym 18:00\", \"mai họp 14:00\", \"ngày 20 tháng 10 mua quà\".\n"
+    "On the confirmation, tap 📅 to push the tasks to today/tomorrow (with mixed\n"
+    "dates you pick which ones by number), or ✅ Save to keep the dates as shown.\n"
     "Send a voice note in DM to add tasks by voice."
 )
 
@@ -197,16 +199,69 @@ def saved_summary(per_date, today=None):
     return f"Saved {_n_tasks(total)}: {parts}."
 
 
-def confirm_markup(state_id):
+def confirm_markup(state_id, move_targets=None):
+    rows = [
+        [
+            {"text": "✅ Save", "callback_data": f"confirm:{state_id}"},
+            {"text": "✏️ Edit", "callback_data": f"edit:{state_id}"},
+            {"text": "❌ Cancel", "callback_data": f"cancel:{state_id}"},
+        ]
+    ]
+    move_row = [
+        {
+            "text": MOVE_TO_TODAY if target == "today" else MOVE_TO_TOMORROW,
+            "callback_data": f"move:{state_id}:{target}",
+        }
+        for target in (move_targets or [])
+    ]
+    if move_row:
+        rows.append(move_row)
+    return {"inline_keyboard": rows}
+
+
+# ---- v2.1: quick date move ----
+MOVE_TO_TODAY = "📅 Move to today"
+MOVE_TO_TOMORROW = "📅 Move to tomorrow"
+MOVE_CANCEL_BUTTON = "❌ Cancel"
+MOVE_PICK_HEADER = "Move which tasks to {when}?"
+MOVE_PICK_HINT = "Reply with numbers (e.g. 1, 3), 'all', or 'cancel'."
+MOVE_INVALID = "I didn't catch that. Reply with numbers like 1, 3, 'all', or 'cancel'."
+MOVE_CANCELLED = "Kept the original dates."
+
+
+def move_picker(tasks, target_iso, today=None):
+    """The 'which tasks?' prompt.
+
+    The task block is rendered with the same numbered renderer as the original
+    confirmation, so the numbers the user saw still match. Tasks are not
+    filtered: a far-future task can be pulled forward just like any other.
+    """
+    return (
+        MOVE_PICK_HEADER.format(when=format_date_label(target_iso, today))
+        + "\n"
+        + render_tasks(tasks, today=today, numbered=True)
+        + "\n\n"
+        + MOVE_PICK_HINT
+    )
+
+
+def move_markup(state_id):
     return {
         "inline_keyboard": [
-            [
-                {"text": "✅ Save", "callback_data": f"confirm:{state_id}"},
-                {"text": "✏️ Edit", "callback_data": f"edit:{state_id}"},
-                {"text": "❌ Cancel", "callback_data": f"cancel:{state_id}"},
-            ]
+            [{"text": MOVE_CANCEL_BUTTON, "callback_data": f"cancel_move:{state_id}"}]
         ]
     }
+
+
+def moved_saved_summary(moved, target_iso, per_date, today=None):
+    """'Moved 2 tasks to tomorrow (Tue 20 Oct).' plus the per-date save summary."""
+    when = format_date_label(target_iso, today)
+    total = sum(per_date.values())
+    if moved and moved == total:
+        return f"Moved {_n_tasks(moved)} to {when}."
+    if moved:
+        return f"Moved {_n_tasks(moved)} to {when}. " + saved_summary(per_date, today)
+    return saved_summary(per_date, today)
 
 
 # ---- voice / Slot B rate limiting ----

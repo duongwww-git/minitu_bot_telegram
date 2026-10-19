@@ -119,6 +119,48 @@ def set_setting(key, value):
     db.table("settings").upsert({"key": key, "value": str(value)}).execute()
 
 
+# -------- pending date move (v2.1) --------
+# One pending move per user, kept in `settings` so the plain-number reply can
+# be tied to the confirmation it belongs to. No schema change.
+
+def _move_key(user_id):
+    return f"move_pending:{user_id}"
+
+
+def set_pending_move(user_id, state_id, target, chat_id=None, message_id=None):
+    set_setting(
+        _move_key(user_id),
+        f"{state_id}|{target}|{chat_id if chat_id is not None else ''}|"
+        f"{message_id if message_id is not None else ''}",
+    )
+
+
+def get_pending_move(user_id):
+    raw = get_setting(_move_key(user_id))
+    if not raw:
+        return None
+    parts = str(raw).split("|")
+    if len(parts) < 2 or not parts[0]:
+        return None
+
+    def _int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "state_id": parts[0],
+        "target": parts[1],
+        "chat_id": _int(parts[2]) if len(parts) > 2 else None,
+        "message_id": _int(parts[3]) if len(parts) > 3 else None,
+    }
+
+
+def clear_pending_move(user_id):
+    delete_setting(_move_key(user_id))
+
+
 # -------- reminders (defaults) --------
 
 WEEKDAYS_ALL = [1, 2, 3, 4, 5, 6, 7]

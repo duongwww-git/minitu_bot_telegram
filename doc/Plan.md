@@ -47,6 +47,7 @@ A Telegram reminder agent for personal use by a small, fixed group of 2 users (a
 - Validation window `[today, today + 365]`; a past date falls back to the default (tomorrow) and the bot says so.
 - Rule-parser fallback covers only today / tomorrow / day-after-tomorrow / weekend→Saturday; explicit dates and weekdays are AI-only, so the fallback stays predictable.
 - `/list` shows today-forward tasks grouped by date (`UPCOMING_DAYS`, default 30); overdue is derived (`for_date < today and not done`) and appears in neither `/list` nor the digest.
+- Quick date move: the confirmation offers **📅 Move to today / tomorrow** when at least one task is today or tomorrow. One shared date moves on the tap; mixed dates ask which tasks by number (`1, 3`, `1-3`, `all`) and the reply moves the subset and saves the whole batch. Far-future tasks can be pulled forward. No schema change (pointer in `settings`).
 - No migration required; groundwork for the v3 Calendar integration (`google_event_id`).
 
 ## V3 scope (Google Calendar integration + Vietnamese localization)

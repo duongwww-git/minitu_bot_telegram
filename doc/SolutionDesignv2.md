@@ -228,6 +228,52 @@ is the only column the v3 integration adds.
 - Vague wording (`tuần sau`, `cuối tuần`) is resolved by the model, so it is best-effort
   rather than exact.
 
+### 6.7 Quick date move (v2.1)
+
+The confirmation message carries a second button row so a task can be pushed to
+today/tomorrow without retyping it.
+
+**When the buttons appear.** At least one task must be today or tomorrow — a batch of
+explicit far-future dates was typed deliberately, so it gets neither button. Then:
+
+| Batch dates | Move to today | Move to tomorrow |
+|---|---|---|
+| all today | — | ✅ |
+| all tomorrow | ✅ | — |
+| all ≥ today+2 | — | — |
+| today + tomorrow | ✅ | ✅ |
+| today + 20/12 | ✅ | ✅ |
+| tomorrow + 20/12 | ✅ | — |
+
+Rule: show **Move to today** if any task is later than today; show **Move to tomorrow**
+if any task is today.
+
+**Single date → one tap.** `messages.all_same_date(tasks)` → every task is re-dated and
+the batch is saved immediately (`Moved 2 tasks to tomorrow (Tue 20 Oct).`).
+
+**Mixed dates → pick which ones.** The tap stores a pointer and edits the message into a
+picker (`move_pending:<user_id>` in the existing `settings` table — no schema change,
+one pending move per user). The picker renders the task block with the *same*
+`render_tasks(numbered=True)` used by the confirmation, so the numbers still match the
+message the user is reading. Tasks are **not** filtered: a `20/12` task in the batch can
+be pulled forward like any other, and a selected task is re-dated regardless of its
+original date.
+
+The reply is parsed by `parser.parse_selection()` (`1,2,4` / `1 2 4` / `1-3` / `all` /
+`tất cả` / `cancel`) and is intercepted before the free-text task path. Replying with the
+numbers **is** the confirmation: the selected tasks are re-dated and the whole batch —
+edited and untouched alike — is saved. `cancel` (or the ❌ button) restores the original
+confirmation via `edit_message_text`, nothing saved. An unparseable reply re-asks and
+keeps waiting.
+
+**Where it works.** The chat that was confirmed; in a group only when replying to the
+bot's prompt (mirrors the group-voice rule). A pointer whose state has expired (the usual
+15-minute window) is dropped and the text falls through as a normal message — deliberately
+silent, no notice.
+
+**Cost of the feature:** no migration, no new dependency, no env var, no cron change.
+Callback payloads stay within Telegram's 64-byte limit (`move:` + uuid + target ≈ 50).
+
 ## 7. Done/snooze flow (outline)
 
 - Digest message includes inline buttons per task: ✅ Done, ⏰ +30m, ⏭ Skip.

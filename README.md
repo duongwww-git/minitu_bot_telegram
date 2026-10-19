@@ -2,8 +2,8 @@
 
 Personal Telegram reminder agent for 2 users sharing one group chat. V1 is the
 rule-based core; V2 adds Google Gemini intelligence (text parsing + voice
-transcription); V2.1 adds date detection. See `doc/SolutionDesignv1.md` and
-`doc/SolutionDesignv2.md`.
+transcription); V2.1 adds date detection and quick date moves. See
+`doc/SolutionDesignv1.md` and `doc/SolutionDesignv2.md`.
 
 ## Features
 
@@ -13,6 +13,9 @@ transcription); V2.1 adds date detection. See `doc/SolutionDesignv1.md` and
 - Name a day and the task is saved for that date: `today`, `mai`, `ngày mốt`,
   `thứ 6`, `cuối tuần`, `20/10`, `ngày 20 tháng 10`. Without a day it defaults to
   tomorrow. A past date falls back to tomorrow and tells you.
+- On the confirmation, a **📅 Move to today / tomorrow** button re-dates the
+  batch. A single date moves on the tap; mixed dates ask which tasks by number
+  (`1, 3`, `1-3`, `all`), and the reply both moves and saves them.
 - Voice notes in DM are transcribed with Gemini Transcribe, then parsed.
 - If transcription is rate-limited, recordings are queued (max 5) and can be
   retried with the **🔁 Retry** button or `/retry`.

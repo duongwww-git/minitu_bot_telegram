@@ -119,6 +119,43 @@ def _parse_tasks(text, today=None):
     return parser.parse_tasks(text, today=today)
 
 
+def _confirm_body(st):
+    """Rebuild the confirmation text from a stored state payload."""
+    tasks = st.get("tasks") or []
+    today = _today()
+    when = (
+        messages.format_date_label(tasks[0]["date"], today)
+        if tasks and messages.all_same_date(tasks)
+        else None
+    )
+    return messages.confirm_prompt(
+        parser.format_tasks(tasks, today=today),
+        when=when,
+        count=len(tasks),
+        transcript=st.get("transcript"),
+        label=st.get("label"),
+    )
+
+
+def _move_targets(tasks, today):
+    """Which quick date-move buttons apply to this batch ([] means none).
+
+    No buttons unless at least one task is today or tomorrow: a batch made only
+    of explicit far-future dates was typed deliberately, so it stays as-is.
+    """
+    today_iso = today.isoformat()
+    dates = {(t.get("date") or "") for t in tasks}
+    dates.discard("")
+    if today_iso not in dates and (today + timedelta(days=1)).isoformat() not in dates:
+        return []
+    targets = []
+    if any(d > today_iso for d in dates):
+        targets.append("today")
+    if today_iso in dates:
+        targets.append("tomorrow")
+    return targets
+
+
 def start_task_input(user, chat_id, text, target_date, group_id, transcript=None, label=None):
     today = _today()
     tasks = _parse_tasks(text, today=today)
@@ -140,27 +177,162 @@ def start_task_input(user, chat_id, text, target_date, group_id, transcript=None
     }
     if transcript:
         state_payload["transcript"] = transcript
+    if label:
+        state_payload["label"] = label
     state = repo.create_state(user["id"], chat_id, state_payload)
     if not state:
         tg.send_message(chat_id, "Failed to create confirmation state. Try again.")
         return
-    when = (
-        messages.format_date_label(tasks[0]["date"], today)
-        if messages.all_same_date(tasks)
-        else None
-    )
-    body = messages.confirm_prompt(
-        parser.format_tasks(tasks, today=today),
-        when=when,
-        count=len(tasks),
-        transcript=transcript,
-        label=label,
-    )
+    body = _confirm_body(state_payload)
     if any_date_rejected:
         body += "\n\n" + messages.DATE_IN_PAST.format(
             when=messages.format_date_label(default_date, today)
         )
-    tg.send_message(chat_id, body, reply_markup=messages.confirm_markup(state["id"]))
+    tg.send_message(
+        chat_id,
+        body,
+        reply_markup=messages.confirm_markup(state["id"], _move_targets(tasks, today)),
+    )
+
+
+# -------- v2.1: quick date move (today/tomorrow) --------
+
+
+def _move_target_iso(target):
+    return (_tomorrow() if target == "tomorrow" else _today()).isoformat()
+
+
+def _clear_pending_move_for(user_id, state_id):
+    """Drop the pointer only when it still points at this state."""
+    pending = repo.get_pending_move(user_id)
+    if pending and pending.get("state_id") == state_id:
+        repo.clear_pending_move(user_id)
+
+
+def _apply_move(user, chat_id, state_id, st, selected, target):
+    """Re-date the selected tasks (1-based numbers) and save the whole batch.
+
+    Tasks that weren't selected keep their date but are saved too, so replying
+    with the numbers is also the confirmation.
+    """
+    today = _today()
+    target_iso = _move_target_iso(target)
+    tasks = st.get("tasks") or []
+    group_id = st.get("group_id")
+    moved = 0
+    for i, t in enumerate(tasks, 1):
+        if i not in selected:
+            continue
+        if (t.get("date") or "") != target_iso:
+            moved += 1
+        t["date"] = target_iso
+    per_date = {}
+    try:
+        for t in tasks:
+            d = t.get("date") or st.get("target_date")
+            repo.add_daily_task(user["id"], group_id, d, t["title"], t.get("time"))
+            per_date[d] = per_date.get(d, 0) + 1
+    except Exception as e:
+        tg.send_message(chat_id, f"Error saving tasks: {e}")
+        return
+    repo.delete_state(state_id)
+    repo.clear_pending_move(user["id"])
+    tg.send_message(
+        chat_id, messages.moved_saved_summary(moved, target_iso, per_date, today=today)
+    )
+
+
+def _restore_confirmation(user, chat_id, message_id, state_id):
+    """Put the original Save/Edit/Cancel confirmation back after a move is dropped."""
+    state = repo.get_state(state_id)
+    _clear_pending_move_for(user["id"], state_id)
+    if not state:
+        return
+    st = state.get("state") or {}
+    body = _confirm_body(st)
+    markup = messages.confirm_markup(state_id, _move_targets(st.get("tasks") or [], _today()))
+    if chat_id and message_id:
+        try:
+            tg.edit_message_text(chat_id, message_id, body, reply_markup=markup)
+            return
+        except Exception as e:
+            print(f"confirm restore edit failed: {e}")
+    if chat_id:
+        tg.send_message(chat_id, body, reply_markup=markup)
+
+
+def _handle_move_selection(user, chat_id, text, pending):
+    """Consume a text reply while a date move is pending.
+
+    Returns True when the message was handled; False lets it fall through as a
+    normal message (the confirmation expired, so there is nothing to move).
+    """
+    state_id = pending.get("state_id")
+    state = repo.get_state(state_id)
+    if (not state
+            or pending.get("chat_id") not in (None, chat_id)
+            or str(state.get("user_id")) != str(user["id"])):
+        repo.clear_pending_move(user["id"])
+        return False
+    st = state.get("state") or {}
+    tasks = st.get("tasks") or []
+    if not tasks:
+        repo.clear_pending_move(user["id"])
+        return False
+    kind, picked = parser.parse_selection(text, len(tasks))
+    if kind == "cancel":
+        _restore_confirmation(
+            user, pending.get("chat_id") or chat_id, pending.get("message_id"), state_id
+        )
+        tg.send_message(chat_id, messages.MOVE_CANCELLED)
+        return True
+    if kind != "ok":
+        tg.send_message(chat_id, messages.MOVE_INVALID)
+        return True
+    _apply_move(user, chat_id, state_id, st, picked, pending.get("target"))
+    return True
+
+
+def _move_callback(user, cb_msg, cq_id, state_id, target):
+    """📅 Move to today/tomorrow: apply directly, or ask which tasks."""
+    chat_id = (cb_msg.get("chat") or {}).get("id")
+    message_id = cb_msg.get("message_id")
+    state = repo.get_state(state_id)
+    if not state or str(state.get("user_id")) != str(user["id"]):
+        tg.answer_callback_query(cq_id, "Expired or invalid.", show_alert=True)
+        _clear_pending_move_for(user["id"], state_id)
+        return
+    st = state.get("state") or {}
+    tasks = st.get("tasks") or []
+    if target not in ("today", "tomorrow") or not tasks:
+        tg.answer_callback_query(cq_id)
+        return
+    if messages.all_same_date(tasks):
+        tg.answer_callback_query(cq_id, "Moving...")
+        _apply_move(user, chat_id, state_id, st, set(range(1, len(tasks) + 1)), target)
+        return
+    # mixed dates: remember the move and ask which tasks by number
+    repo.set_pending_move(
+        user["id"], state_id, target, chat_id=chat_id, message_id=message_id
+    )
+    tg.answer_callback_query(cq_id)
+    text = messages.move_picker(tasks, _move_target_iso(target), today=_today())
+    markup = messages.move_markup(state_id)
+    if chat_id and message_id:
+        try:
+            tg.edit_message_text(chat_id, message_id, text, reply_markup=markup)
+            return
+        except Exception as e:
+            print(f"move picker edit failed: {e}")
+    if chat_id:
+        tg.send_message(chat_id, text, reply_markup=markup)
+
+
+def _cancel_move_callback(user, cb_msg, cq_id, state_id):
+    chat_id = (cb_msg.get("chat") or {}).get("id")
+    message_id = cb_msg.get("message_id")
+    tg.answer_callback_query(cq_id, "Kept the original dates.")
+    _restore_confirmation(user, chat_id, message_id, state_id)
 
 
 def _handle_remove(user, id_str, chat_id, group_id=None):
@@ -408,6 +580,10 @@ def handle_private_message(chat_id, tg_user, text, tg_msg=None):
             return
         handle_command(cmd, args, user, chat_id, is_group=False, group_id=None)
         return
+    # a plain reply may be answering a pending "move to today/tomorrow"
+    pending = repo.get_pending_move(user["id"])
+    if pending and _handle_move_selection(user, chat_id, text, pending):
+        return
     # free text -> tomorrow input
     gid = _primary_group_id(user["id"])
     start_task_input(user, chat_id, text, _tomorrow(), gid)
@@ -463,6 +639,11 @@ def handle_group_message(chat_id, tg_user, text, msg):
     if not text_to_parse.strip():
         tg.send_message(chat_id, messages.TASKS_AFTER_MENTION)
         return
+    # a reply to the bot may be answering a pending "move to today/tomorrow"
+    if reply_to_bot:
+        pending = repo.get_pending_move(user["id"])
+        if pending and _handle_move_selection(user, chat_id, text_to_parse, pending):
+            return
     start_task_input(user, chat_id, text_to_parse, _tomorrow(), group_id)
 
 
@@ -678,6 +859,13 @@ def handle_callback(callback_query):
         tg.answer_callback_query(cq_id, "Retrying...")
         retry_voice(user, chat_id, None)
         return
+    if data.startswith("move:"):
+        state_id, _, target = data[len("move:"):].partition(":")
+        _move_callback(user, cb_msg, cq_id, state_id, target)
+        return
+    if data.startswith("cancel_move:"):
+        _cancel_move_callback(user, cb_msg, cq_id, data[len("cancel_move:"):])
+        return
     if ":" not in data:
         tg.answer_callback_query(cq_id)
         return
@@ -700,6 +888,7 @@ def handle_callback(callback_query):
                 repo.add_daily_task(user["id"], group_id, d, t["title"], t.get("time"))
                 per_date[d] = per_date.get(d, 0) + 1
             repo.delete_state(state_id)
+            _clear_pending_move_for(user["id"], state_id)
             tg.answer_callback_query(cq_id, "Saved.")
             tg.send_message(chat_id, messages.saved_summary(per_date, today=today))
         except Exception as e:
@@ -709,6 +898,7 @@ def handle_callback(callback_query):
 
     if action == "cancel":
         repo.delete_state(state_id)
+        _clear_pending_move_for(user["id"], state_id)
         tg.answer_callback_query(cq_id, "Cancelled.")
         if chat_id:
             tg.send_message(chat_id, "Cancelled.")
@@ -716,6 +906,7 @@ def handle_callback(callback_query):
 
     if action == "edit":
         repo.delete_state(state_id)
+        _clear_pending_move_for(user["id"], state_id)
         tg.answer_callback_query(cq_id, "Resend corrected list.")
         if chat_id:
             tg.send_message(chat_id, "Send the corrected task list, or /tomorrow ... again.")

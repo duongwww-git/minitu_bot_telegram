@@ -143,3 +143,48 @@ def format_tasks(tasks, today=None):
     from lib import messages
 
     return messages.render_tasks(tasks, today=today, numbered=True)
+
+
+# ---- v2.1: "which tasks?" replies (date move) ----
+
+_SELECTION_ALL = re.compile(r"^(all|tất cả|tat ca)$", re.I)
+_SELECTION_CANCEL = re.compile(r"^(cancel|hủy|huỷ|huy)$", re.I)
+_SELECTION_SPLIT = re.compile(r"\s*(?:[,;+]|\band\b|\bvà\b|&)\s*|\s+")
+
+
+def parse_selection(text, count):
+    """Parse a reply that picks tasks by number.
+
+    Returns ("cancel", None), ("ok", {1-based numbers}) or (None, None) when
+    the text isn't a selection at all (so callers can fall through).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None, None
+    low = raw.lower()
+    if _SELECTION_CANCEL.match(low):
+        return "cancel", None
+    if _SELECTION_ALL.match(low):
+        return "ok", set(range(1, count + 1))
+    # collapse "1 - 3" so the range token survives the split
+    low = re.sub(r"(\d)\s*-\s*(\d)", r"\1-\2", low)
+    picked = set()
+    saw_token = False
+    for part in _SELECTION_SPLIT.split(low):
+        if not part:
+            continue
+        saw_token = True
+        rng = re.match(r"^(\d+)-(\d+)$", part)
+        if rng:
+            a, b = int(rng.group(1)), int(rng.group(2))
+            picked.update(range(min(a, b), max(a, b) + 1))
+            continue
+        if re.match(r"^\d+$", part):
+            picked.add(int(part))
+            continue
+        return None, None  # a non-numeric token -> not a selection
+    if not saw_token or not picked:
+        return None, None
+    if any(n < 1 or n > count for n in picked):
+        return None, None
+    return "ok", picked
