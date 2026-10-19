@@ -6,7 +6,7 @@ Slot B: voice -> text via Gemini Transcribe.
 Uses the REST API over httpx so no extra dependency is required. All failures
 raise AIError, so callers can fall back to the v1 rule parser or queue the
 request for retry: AIRateLimited for HTTP 429 (queue it, do not retry) and
-AITransient for 5xx/network errors (retried once, then the next model).
+AITransient for 5xx/network errors (move on to the next model).
 """
 
 import base64
@@ -34,7 +34,7 @@ class AIRateLimited(AIError):
 
 
 class AITransient(AIError):
-    """5xx or network failure: worth one retry, then the next model."""
+    """5xx or network failure: try the next model."""
 
 
 _TASK_SCHEMA = {
@@ -139,50 +139,45 @@ def _model_chain(primary, fallbacks):
 
 
 def _generate(models, parts, response_schema=None, temperature=0.2, timeout=None):
-    """Call the first model that answers, retrying transient errors once.
+    """Call the first model that answers: one attempt per model, no retries.
 
-    Each model in ``models`` gets ``AI_RETRY_COUNT`` retries for 5xx/network
-    errors before the next model is tried. A 429 is raised straight away: the
-    voice queue is the retry mechanism for rate limits, so re-spending quota in
-    the same request only makes it worse. A model that answers with empty text
-    yields to the next model (a broken model must not shadow a working one).
+    A transient 5xx/network error moves straight to the next model instead of
+    being retried. The free tier caps requests per project per model per day
+    (20), so retrying a failing model only spends budget that the fallback
+    needs. A 429 is raised at once: the voice queue is the rate-limit retry.
+    A model that answers with empty text also yields to the next one, so a
+    broken model cannot shadow a working one.
     """
-    attempts = max(0, config.AI_RETRY_COUNT) + 1
     deadline = config.AI_DEADLINE_SECONDS
     started = time.monotonic()
     last_error = None
     saw_empty = False
     for model in models:
-        for attempt in range(1, attempts + 1):
-            call_timeout = timeout or config.AI_TIMEOUT_SECONDS
-            if deadline > 0:
-                remaining = deadline - (time.monotonic() - started)
-                if remaining <= 0:
-                    print(f"ai: {deadline}s deadline reached, giving up")
-                    raise last_error or AIError("AI deadline exceeded")
-                call_timeout = min(call_timeout, remaining)
-            try:
-                text = _generate_once(
-                    model, parts, response_schema, temperature, call_timeout
-                )
-            except AIRateLimited:
-                raise
-            except AITransient as e:
-                last_error = e
-                print(f"ai: {model} attempt {attempt}/{attempts} transient: {e}")
-                if attempt < attempts:
-                    time.sleep(max(0, config.AI_RETRY_BACKOFF_MS) / 1000.0)
-                    continue
-                break
-            except AIError as e:
-                last_error = e
-                print(f"ai: {model} failed: {e}")
-                break
-            if text:
-                return text
-            saw_empty = True
-            print(f"ai: {model} returned empty text")
-            break
+        call_timeout = timeout or config.AI_TIMEOUT_SECONDS
+        if deadline > 0:
+            remaining = deadline - (time.monotonic() - started)
+            if remaining <= 0:
+                print(f"ai: {deadline}s deadline reached, giving up")
+                raise last_error or AIError("AI deadline exceeded")
+            call_timeout = min(call_timeout, remaining)
+        try:
+            text = _generate_once(
+                model, parts, response_schema, temperature, call_timeout
+            )
+        except AIRateLimited:
+            raise
+        except AITransient as e:
+            last_error = e
+            print(f"ai: {model} transient: {e}")
+            continue
+        except AIError as e:
+            last_error = e
+            print(f"ai: {model} failed: {e}")
+            continue
+        if text:
+            return text
+        saw_empty = True
+        print(f"ai: {model} returned empty text")
     if saw_empty and last_error is None:
         return ""
     raise last_error or AIError("AI returned no response")

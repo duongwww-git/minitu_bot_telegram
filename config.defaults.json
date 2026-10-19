@@ -6,8 +6,6 @@
   "AI_MODEL_TEXT_FALLBACKS": "gemini-3.5-flash,gemini-3.7-flash",
   "AI_MODEL_TRANSCRIBE": "gemini-3.5-transcribe",
   "AI_MODEL_TRANSCRIBE_FALLBACKS": "gemini-3.8-flash,gemini-3.5-flash",
-  "AI_RETRY_COUNT": 1,
-  "AI_RETRY_BACKOFF_MS": 400,
   "AI_TIMEOUT_SECONDS": 25,
   "AI_DEADLINE_SECONDS": 45,
   "USE_AI": true,

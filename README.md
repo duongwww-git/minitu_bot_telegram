@@ -17,10 +17,11 @@ transcription); V2.1 adds date detection and quick date moves. See
   batch. A single date moves on the tap; mixed dates ask which tasks by number
   (`1, 3`, `1-3`, `all`), and the reply both moves and saves them.
 - Voice notes in DM are transcribed with Gemini Transcribe, then parsed.
-- Every Gemini call retries once on a 5xx/timeout and then falls back through an
-  ordered model list (`AI_MODEL_TEXT_FALLBACKS` /
-  `AI_MODEL_TRANSCRIBE_FALLBACKS` in `config.defaults.json`), so a "high demand"
-  503 on one model no longer loses the message.
+- Every Gemini call falls back through an ordered model list
+  (`AI_MODEL_TEXT_FALLBACKS` / `AI_MODEL_TRANSCRIBE_FALLBACKS` in
+  `config.defaults.json`), so a "high demand" 503 on one model no longer loses the
+  message. Each model is tried once — no in-request retry, because the free tier
+  allows only 20 requests per model per day.
 - If transcription is rate-limited or every model is busy, recordings are queued
   (max 5) and can be retried with the **🔁 Retry** button or `/retry`.
 - `/list` shows your tasks from today forward, grouped by date.

@@ -99,8 +99,8 @@ BOT_USERNAME = env("BOT_USERNAME", "")
 
 # ---- non-secret tunables (defaults live in config.defaults.json) ----
 # Slot A = Gemini Flash (text -> tasks), Slot B = Gemini Transcribe (voice -> text).
-# Each slot has an ordered fallback list: a transient 5xx/network error gets one
-# retry, then the next model is tried.
+# Each slot has an ordered fallback list: a transient 5xx/network error moves
+# straight to the next model (one attempt per model, no retries).
 GROUP_TIMEZONE = cfg_str("GROUP_TIMEZONE", "Asia/Bangkok")
 DIGEST_HOUR_LOCAL = cfg_int("DIGEST_HOUR_LOCAL", 6)
 AI_MODEL_TEXT = cfg_str("AI_MODEL_TEXT", "gemini-3.8-flash")
@@ -111,9 +111,6 @@ AI_MODEL_TRANSCRIBE = cfg_str("AI_MODEL_TRANSCRIBE", "gemini-3.5-transcribe")
 AI_MODEL_TRANSCRIBE_FALLBACKS = cfg_list(
     "AI_MODEL_TRANSCRIBE_FALLBACKS", ["gemini-3.8-flash", "gemini-3.5-flash"]
 )
-# v2.2: retry transient (5xx/network) errors once per model before falling back.
-AI_RETRY_COUNT = cfg_int("AI_RETRY_COUNT", 1)
-AI_RETRY_BACKOFF_MS = cfg_int("AI_RETRY_BACKOFF_MS", 400)
 AI_TIMEOUT_SECONDS = cfg_int("AI_TIMEOUT_SECONDS", 25)
 # Whole-chain budget: stop trying before the serverless function is killed
 # (a killed request makes Telegram retry the update and can double-add tasks).

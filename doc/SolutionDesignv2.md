@@ -180,10 +180,12 @@ does not lose a task or a recording:
 | A (text → tasks) | `gemini-3.8-flash` | `gemini-3.5-flash`, `gemini-3.7-flash` |
 | B (voice → text) | `gemini-3.5-transcribe` | `gemini-3.8-flash`, `gemini-3.5-flash` |
 
-- **Retry once, then fall back.** HTTP 5xx (500/502/503/504), timeouts and network
-  errors are retried `AI_RETRY_COUNT` (default 1) times on the same model with
-  `AI_RETRY_BACKOFF_MS` (default 400 ms), then the next model is tried. Every model
-  gets the same treatment.
+- **One attempt per model, then fall back.** HTTP 5xx (500/502/503/504), timeouts and
+  network errors move straight to the next model — there is no in-request retry. The
+  free tier caps requests per project per model per day (**20**), so retrying a
+  failing model spends budget the fallback needs, and a 5xx on a retried model buys
+  nothing that a healthy model would not. A last-resort retry belongs in the voice
+  queue, where it is bounded and user-visible.
 - **Other 4xx are not retried** (400/404 will not fix themselves) but they do fall
   through to the next model — that is how a model that rejects `responseSchema` is
   skipped.
