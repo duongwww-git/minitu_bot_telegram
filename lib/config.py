@@ -48,6 +48,20 @@ def cfg_int(name, default):
         return default
 
 
+def cfg_list(name, default=None):
+    """A comma-separated list (env var or JSON string), or a real JSON array."""
+    raw = _config_value(name, default)
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out = []
+    for item in items:
+        item = str(item).strip()
+        if item:
+            out.append(item)
+    return out
+
+
 def config_file_loaded():
     """True when config.defaults.json was found and parsed at startup."""
     return bool(_FILE_CONFIG)
@@ -85,10 +99,25 @@ BOT_USERNAME = env("BOT_USERNAME", "")
 
 # ---- non-secret tunables (defaults live in config.defaults.json) ----
 # Slot A = Gemini Flash (text -> tasks), Slot B = Gemini Transcribe (voice -> text).
+# Each slot has an ordered fallback list: a transient 5xx/network error gets one
+# retry, then the next model is tried.
 GROUP_TIMEZONE = cfg_str("GROUP_TIMEZONE", "Asia/Bangkok")
 DIGEST_HOUR_LOCAL = cfg_int("DIGEST_HOUR_LOCAL", 6)
 AI_MODEL_TEXT = cfg_str("AI_MODEL_TEXT", "gemini-3.8-flash")
+AI_MODEL_TEXT_FALLBACKS = cfg_list(
+    "AI_MODEL_TEXT_FALLBACKS", ["gemini-3.5-flash", "gemini-3.7-flash"]
+)
 AI_MODEL_TRANSCRIBE = cfg_str("AI_MODEL_TRANSCRIBE", "gemini-3.5-transcribe")
+AI_MODEL_TRANSCRIBE_FALLBACKS = cfg_list(
+    "AI_MODEL_TRANSCRIBE_FALLBACKS", ["gemini-3.8-flash", "gemini-3.5-flash"]
+)
+# v2.2: retry transient (5xx/network) errors once per model before falling back.
+AI_RETRY_COUNT = cfg_int("AI_RETRY_COUNT", 1)
+AI_RETRY_BACKOFF_MS = cfg_int("AI_RETRY_BACKOFF_MS", 400)
+AI_TIMEOUT_SECONDS = cfg_int("AI_TIMEOUT_SECONDS", 25)
+# Whole-chain budget: stop trying before the serverless function is killed
+# (a killed request makes Telegram retry the update and can double-add tasks).
+AI_DEADLINE_SECONDS = cfg_int("AI_DEADLINE_SECONDS", 45)
 USE_AI = cfg_bool("USE_AI", False)
 VOICE_QUEUE_MAX = cfg_int("VOICE_QUEUE_MAX", 5)
 VOICE_DRAIN_MAX = cfg_int("VOICE_DRAIN_MAX", 3)

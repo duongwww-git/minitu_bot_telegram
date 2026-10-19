@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, HTTPException
 
 from lib import config, tg, handlers, digest, repo
 
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 
 app = FastAPI()
 
@@ -144,7 +144,13 @@ async def debug():
         "voice_enabled": cfg.VOICE_ENABLED,
         "gemini_key_set": bool(cfg.GEMINI_API_KEY),
         "ai_model_text": cfg.AI_MODEL_TEXT,
+        "ai_model_text_fallbacks": cfg.AI_MODEL_TEXT_FALLBACKS,
         "ai_model_transcribe": cfg.AI_MODEL_TRANSCRIBE,
+        "ai_model_transcribe_fallbacks": cfg.AI_MODEL_TRANSCRIBE_FALLBACKS,
+        "ai_retry_count": cfg.AI_RETRY_COUNT,
+        "ai_retry_backoff_ms": cfg.AI_RETRY_BACKOFF_MS,
+        "ai_timeout_seconds": cfg.AI_TIMEOUT_SECONDS,
+        "ai_deadline_seconds": cfg.AI_DEADLINE_SECONDS,
         "voice_queue_max": cfg.VOICE_QUEUE_MAX,
         "config_file_loaded": cfg.config_file_loaded(),
     }

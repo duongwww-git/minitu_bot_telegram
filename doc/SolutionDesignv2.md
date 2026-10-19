@@ -148,7 +148,7 @@ $0 rule-based behavior exactly.
 
 ### 6.5 Slot B rate-limit handling & voice retry queue
 
-On 429 (after one quick in-request retry with ~1–2 s backoff):
+On 429 (no in-request retry — the queue below *is* the retry):
 
 1. **Enqueue the voice**: one `conversation_state` row per pending voice
    (`state = {"kind":"pending_voice","file_id":…,"message_id":…,"duration":…,"status":"queued"}`,
@@ -169,6 +169,48 @@ On 429 (after one quick in-request retry with ~1–2 s backoff):
 
 Decisions: **queue (not most-recent-only), cap 5, English copy in V2.** Vietnamese retry/status
 copy is deferred to V3. Copy lives in `lib/messages.py` (see §3).
+
+#### Model fallback and retries
+
+Every Gemini call runs through an ordered model chain, so one model's bad minute
+does not lose a task or a recording:
+
+| slot | primary | fallbacks |
+|---|---|---|
+| A (text → tasks) | `gemini-3.8-flash` | `gemini-3.5-flash`, `gemini-3.7-flash` |
+| B (voice → text) | `gemini-3.5-transcribe` | `gemini-3.8-flash`, `gemini-3.5-flash` |
+
+- **Retry once, then fall back.** HTTP 5xx (500/502/503/504), timeouts and network
+  errors are retried `AI_RETRY_COUNT` (default 1) times on the same model with
+  `AI_RETRY_BACKOFF_MS` (default 400 ms), then the next model is tried. Every model
+  gets the same treatment.
+- **Other 4xx are not retried** (400/404 will not fix themselves) but they do fall
+  through to the next model — that is how a model that rejects `responseSchema` is
+  skipped.
+- **429 is never retried in-request.** Re-spending free-tier quota a second later only
+  extends the limit; the voice queue above is the retry, and Slot A falls back to the
+  rule parser.
+- **Empty is not success.** A 200 with no text is logged and yields to the next model,
+  so a broken model cannot shadow a working one.
+- **Deadline.** The chain stops after `AI_DEADLINE_SECONDS` (default 45) and each call
+  uses `min(remaining, AI_TIMEOUT_SECONDS)` (default 25). A function killed by the
+  platform makes Telegram retry the update, which could double-add tasks, so a clean
+  failure is strictly better.
+- **Exhausted and transient → queue.** If a voice note ends on a 5xx/timeout it is
+  enqueued exactly like a 429 (same FIFO, cap, TTL, Retry button). Only permanent
+  errors (400/404/bad response, download failures) are reported as failures.
+
+Model IDs live in `config.defaults.json` (`AI_MODEL_TEXT`,
+`AI_MODEL_TEXT_FALLBACKS`, `AI_MODEL_TRANSCRIBE`,
+`AI_MODEL_TRANSCRIBE_FALLBACKS`), so swapping a fallback needs no code change.
+
+**Response shape.** Slot B's dedicated model returns its transcript under
+`parts[].audioTranscription.text`, *not* `parts[].text`; `_extract_text()` reads both
+(and skips `thought` parts). Before this, a good transcript was discarded as "empty",
+the request fell through to `gemini-3.8-flash`, and a 503 on that model surfaced as a
+failed transcription. Note also that `gemini-3.5-transcribe` rejects
+`responseMimeType: application/json` (`JSON mode is not enabled`), so it must never
+join Slot A's chain.
 
 ### 6.6 Date detection (v2.1)
 

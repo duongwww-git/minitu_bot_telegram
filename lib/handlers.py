@@ -738,8 +738,9 @@ def _handle_voice(user, chat_id, voice_msg, group_id=None, target_date=None):
         group_id = _group_id_for_chat(user, chat_id)
     try:
         transcript = voice.transcribe(file_id)
-    except ai.AIRateLimited as e:
-        print(f"voice rate limited: {e}")
+    except (ai.AIRateLimited, ai.AITransient) as e:
+        # 429, or every model 5xx-ing after its retry: queue instead of losing it
+        print(f"voice deferred: {type(e).__name__}: {e}")
         if _enqueue_voice(user, chat_id, voice_msg):
             n = repo.count_pending_voices(user["id"], chat_id)
             _update_voice_status(user, chat_id, messages.TRANSCRIBE_BUSY.format(n=n))
@@ -798,7 +799,7 @@ def retry_voice(user, chat_id, tg_msg=None):
 
     total = len(pending)
     processed = 0
-    hit_limit = False
+    deferred = False
     for i, row in enumerate(pending[: config.VOICE_DRAIN_MAX], 1):
         st = repo.set_state_status(row["id"], "processing")
         if not st:
@@ -806,10 +807,10 @@ def retry_voice(user, chat_id, tg_msg=None):
         origin_chat = row.get("chat_id") or chat_id
         try:
             transcript = voice.transcribe(st.get("file_id"))
-        except ai.AIRateLimited as e:
-            print(f"voice retry rate limited: {e}")
+        except (ai.AIRateLimited, ai.AITransient) as e:
+            print(f"voice retry deferred: {type(e).__name__}: {e}")
             repo.set_state_status(row["id"], "queued")
-            hit_limit = True
+            deferred = True
             break
         except (ai.AIError, voice.VoiceError) as e:
             print(f"voice retry failed: {type(e).__name__}: {e}")
@@ -833,7 +834,7 @@ def retry_voice(user, chat_id, tg_msg=None):
 
     remaining = repo.count_pending_voices(user["id"])
     if remaining > 0:
-        if processed == 0 and hit_limit:
+        if processed == 0 and deferred:
             _update_voice_status(user, chat_id, messages.TRANSCRIBE_BUSY.format(n=remaining))
         else:
             _update_voice_status(user, chat_id, messages.TRANSCRIBE_PARTIAL.format(ok=processed, n=total))

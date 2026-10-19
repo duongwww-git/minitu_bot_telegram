@@ -4,13 +4,15 @@ Slot A: text -> tasks (structured JSON) via Gemini Flash.
 Slot B: voice -> text via Gemini Transcribe.
 
 Uses the REST API over httpx so no extra dependency is required. All failures
-raise AIError (or AIRateLimited for HTTP 429) so callers can fall back to the
-v1 rule parser or queue the request for retry.
+raise AIError, so callers can fall back to the v1 rule parser or queue the
+request for retry: AIRateLimited for HTTP 429 (queue it, do not retry) and
+AITransient for 5xx/network errors (retried once, then the next model).
 """
 
 import base64
 import json
 import re
+import time
 from datetime import date, datetime
 
 import httpx
@@ -18,7 +20,9 @@ import httpx
 from lib import config
 
 _API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-_TIMEOUT_SECONDS = 30
+
+# HTTP statuses worth retrying before giving up on a model.
+_TRANSIENT_STATUS = {500, 502, 503, 504}
 
 
 class AIError(Exception):
@@ -27,6 +31,10 @@ class AIError(Exception):
 
 class AIRateLimited(AIError):
     pass
+
+
+class AITransient(AIError):
+    """5xx or network failure: worth one retry, then the next model."""
 
 
 _TASK_SCHEMA = {
@@ -89,9 +97,11 @@ def enabled():
     return bool(config.GEMINI_API_KEY)
 
 
-def _generate(model, parts, response_schema=None, temperature=0.2, timeout=_TIMEOUT_SECONDS):
+def _generate_once(model, parts, response_schema=None, temperature=0.2, timeout=None):
     if not config.GEMINI_API_KEY:
         raise AIError("GEMINI_API_KEY not configured")
+    if timeout is None:
+        timeout = config.AI_TIMEOUT_SECONDS
     generation_config = {"temperature": temperature}
     if response_schema is not None:
         generation_config["responseMimeType"] = "application/json"
@@ -108,21 +118,96 @@ def _generate(model, parts, response_schema=None, temperature=0.2, timeout=_TIME
             timeout=timeout,
         )
     except httpx.HTTPError as e:
-        raise AIError(f"{model} request failed: {e}") from e
+        raise AITransient(f"{model} request failed: {e}") from e
     if r.status_code == 429:
         raise AIRateLimited(f"{model}: {r.text[:200]}")
+    if r.status_code in _TRANSIENT_STATUS:
+        raise AITransient(f"{model} HTTP {r.status_code}: {r.text[:200]}")
     if r.status_code >= 400:
         raise AIError(f"{model} HTTP {r.status_code}: {r.text[:200]}")
     return _extract_text(r.json())
+
+
+def _model_chain(primary, fallbacks):
+    """Ordered, de-duplicated model list: primary first, then the fallbacks."""
+    models = []
+    for name in [primary, *(fallbacks or [])]:
+        name = str(name or "").strip()
+        if name and name not in models:
+            models.append(name)
+    return models
+
+
+def _generate(models, parts, response_schema=None, temperature=0.2, timeout=None):
+    """Call the first model that answers, retrying transient errors once.
+
+    Each model in ``models`` gets ``AI_RETRY_COUNT`` retries for 5xx/network
+    errors before the next model is tried. A 429 is raised straight away: the
+    voice queue is the retry mechanism for rate limits, so re-spending quota in
+    the same request only makes it worse. A model that answers with empty text
+    yields to the next model (a broken model must not shadow a working one).
+    """
+    attempts = max(0, config.AI_RETRY_COUNT) + 1
+    deadline = config.AI_DEADLINE_SECONDS
+    started = time.monotonic()
+    last_error = None
+    saw_empty = False
+    for model in models:
+        for attempt in range(1, attempts + 1):
+            call_timeout = timeout or config.AI_TIMEOUT_SECONDS
+            if deadline > 0:
+                remaining = deadline - (time.monotonic() - started)
+                if remaining <= 0:
+                    print(f"ai: {deadline}s deadline reached, giving up")
+                    raise last_error or AIError("AI deadline exceeded")
+                call_timeout = min(call_timeout, remaining)
+            try:
+                text = _generate_once(
+                    model, parts, response_schema, temperature, call_timeout
+                )
+            except AIRateLimited:
+                raise
+            except AITransient as e:
+                last_error = e
+                print(f"ai: {model} attempt {attempt}/{attempts} transient: {e}")
+                if attempt < attempts:
+                    time.sleep(max(0, config.AI_RETRY_BACKOFF_MS) / 1000.0)
+                    continue
+                break
+            except AIError as e:
+                last_error = e
+                print(f"ai: {model} failed: {e}")
+                break
+            if text:
+                return text
+            saw_empty = True
+            print(f"ai: {model} returned empty text")
+            break
+    if saw_empty and last_error is None:
+        return ""
+    raise last_error or AIError("AI returned no response")
 
 
 def _extract_text(data):
     try:
         candidates = data.get("candidates") or []
         parts = candidates[0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
     except (KeyError, IndexError, TypeError) as e:
         raise AIError(f"unexpected response: {str(data)[:200]}") from e
+    chunks = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get("thought"):
+            continue  # thinking models can emit reasoning parts; skip them
+        text = part.get("text")
+        if not text:
+            # The dedicated transcribe model returns its transcript here
+            # rather than in "text" (parts[].audioTranscription.text).
+            audio = part.get("audioTranscription") or part.get("audio_transcription")
+            if isinstance(audio, dict):
+                text = audio.get("text")
+        if text:
+            chunks.append(str(text))
+    return "".join(chunks).strip()
 
 
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})")
@@ -188,7 +273,10 @@ def parse_tasks_ai(text, today_iso=None, tz_name=None):
     )
     try:
         raw = _generate(
-            config.AI_MODEL_TEXT, [{"text": prompt}], response_schema=_TASK_SCHEMA, temperature=0
+            _model_chain(config.AI_MODEL_TEXT, config.AI_MODEL_TEXT_FALLBACKS),
+            [{"text": prompt}],
+            response_schema=_TASK_SCHEMA,
+            temperature=0,
         )
         data = json.loads(raw)
     except (AIError, ValueError):
@@ -231,21 +319,7 @@ def transcribe(audio_bytes, mime_type="audio/ogg"):
         {"text": _TRANSCRIBE_PROMPT},
         {"inline_data": {"mime_type": mime_type, "data": encoded}},
     ]
-    models = [config.AI_MODEL_TRANSCRIBE]
-    if config.AI_MODEL_TEXT and config.AI_MODEL_TEXT != config.AI_MODEL_TRANSCRIBE:
-        # Fall back to the text model (also multimodal) if the dedicated
-        # transcription model is unavailable on this API version.
-        models.append(config.AI_MODEL_TEXT)
-    last_error = None
-    for model in models:
-        try:
-            text = _generate(model, parts)
-        except AIRateLimited:
-            raise
-        except AIError as e:
-            print(f"transcribe model {model} failed: {e}")
-            last_error = e
-            continue
-        if text:
-            return text
-    raise last_error or AIError("transcription failed")
+    models = _model_chain(
+        config.AI_MODEL_TRANSCRIBE, config.AI_MODEL_TRANSCRIBE_FALLBACKS
+    )
+    return _generate(models, parts)
