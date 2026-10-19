@@ -40,6 +40,15 @@ A Telegram reminder agent for personal use by a small, fixed group of 2 users (a
 - Voice input: transcribe Telegram voice notes via Google Gemini Transcribe (free tier), with a retry queue when transcription is rate-limited (queue cap 5; English copy).
 - English UI/parsing copy in v2 (Vietnamese localization deferred to v3).
 
+## V2.1 scope (date detection)
+
+- Free text and voice notes can name a day, and the task is saved for that date (`daily_tasks.for_date`; no schema change).
+- Slot A resolves relative days (`hôm nay`, `mai`, `mốt`), weekdays (`thứ 2`..`chủ nhật`), `cuối tuần`/`tuần sau`, and explicit dates (`20/10`, `ngày 20 tháng 10`, `20 Oct`, ISO) — numeric dates are day/month (Vietnam style).
+- Validation window `[today, today + 365]`; a past date falls back to the default (tomorrow) and the bot says so.
+- Rule-parser fallback covers only today / tomorrow / day-after-tomorrow / weekend→Saturday; explicit dates and weekdays are AI-only, so the fallback stays predictable.
+- `/list` shows today-forward tasks grouped by date (`UPCOMING_DAYS`, default 30); overdue is derived (`for_date < today and not done`) and appears in neither `/list` nor the digest.
+- No migration required; groundwork for the v3 Calendar integration (`google_event_id`).
+
 ## V3 scope (Google Calendar integration + Vietnamese localization)
 
 Two-way sync between Minitu tasks and Google Calendar, limited to 2 users:

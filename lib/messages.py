@@ -4,6 +4,8 @@ English copy in v2. Vietnamese localization is deferred to v3, so keep all
 wording here (and out of handlers) to make that switch a single-file change.
 """
 
+from datetime import date
+
 BOT_NAME = "Minitu"
 
 # ---- common ----
@@ -61,7 +63,8 @@ HELP_BODY = (
     "/retry - retry a voice note that couldn't be transcribed\n"
     "/settings - admin info\n"
     "/help - this message\n\n"
-    "Free text in DM is treated as tomorrow's task input.\n"
+    "Free text in DM is treated as tomorrow's task input unless you name a day:\n"
+    "\"today gym 18:00\", \"mai họp 14:00\", \"ngày 20 tháng 10 mua quà\".\n"
     "Send a voice note in DM to add tasks by voice."
 )
 
@@ -70,20 +73,128 @@ def help_text():
     return f"{HELP_HEADER}\n\n{HELP_BODY}"
 
 
+# ---- dates (v2.1) ----
+
+_WEEKDAYS_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS_SHORT = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _as_date(value):
+    if isinstance(value, date):
+        return value
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def short_date(d):
+    """Tue 20 Oct"""
+    return f"{_WEEKDAYS_SHORT[d.weekday()]} {d.day} {_MONTHS_SHORT[d.month - 1]}"
+
+
+def format_date_label(iso, today=None):
+    """Human label for a date: 'today (Tue 19 Oct)', 'tomorrow (…)' or 'Tue 20 Oct'."""
+    d = _as_date(iso)
+    if d is None:
+        return str(iso or "")
+    td = _as_date(today)
+    if td is not None:
+        delta = (d - td).days
+        if delta == 0:
+            return f"today ({short_date(d)})"
+        if delta == 1:
+            return f"tomorrow ({short_date(d)})"
+        if delta == 2:
+            return f"the day after tomorrow ({short_date(d)})"
+    return short_date(d)
+
+
+def task_line(task, show_id=False):
+    time_val = task.get("time") or task.get("time_of_day")
+    time_part = f" — {str(time_val)[:5]}" if time_val else " — (no time)"
+    id_part = f"[{str(task['id'])[:8]}] " if show_id and task.get("id") else ""
+    return f"{id_part}{task.get('title')}{time_part}"
+
+
+def render_tasks(tasks, today=None, numbered=False, always_group=False, show_id=False):
+    """Render tasks, grouping under a date header when dates vary (or always)."""
+    dates = []
+    for t in tasks:
+        d = t.get("date") or ""
+        if d not in dates:
+            dates.append(d)
+    grouped = always_group or len(dates) > 1
+
+    def bullet(t):
+        return f"  • {task_line(t, show_id=show_id)}"
+
+    def numbered_line(i, t):
+        return f"{i}. {task_line(t)}"
+
+    if not grouped:
+        if numbered:
+            return "\n".join(numbered_line(i, t) for i, t in enumerate(tasks, 1))
+        return "\n".join(bullet(t) for t in tasks)
+
+    lines = []
+    counter = 0
+    for d in dates:
+        lines.append(format_date_label(d, today) if d else "No date")
+        group = [t for t in tasks if (t.get("date") or "") == d]
+        if numbered:
+            for t in group:
+                counter += 1
+                lines.append(numbered_line(counter, t))
+        else:
+            lines.extend(bullet(t) for t in group)
+    return "\n".join(lines)
+
+
+def all_same_date(tasks):
+    return len({(t.get("date") or "") for t in tasks}) <= 1
+
+
 # ---- task confirmation ----
 COULD_NOT_PARSE = "Couldn't parse any tasks. Example:\nfinish report; gym 18:00; call mom"
-CONFIRM_PROMPT = "I understood:\n{tasks}\n\nSave for {when}?"
+CONFIRM_HEADER = "I understood:"
+CONFIRM_SAVE_ONE = "Save for {when}?"
+CONFIRM_SAVE_MANY = "Save these {n} tasks?"
+DATE_IN_PAST = "That date is already in the past, so I saved it for {when} instead."
 TRANSCRIPT_PREFIX = "📝 Transcript: {transcript}"
 
 
-def confirm_prompt(tasks_text, when, transcript=None, label=None):
+def confirm_prompt(tasks_text, when=None, count=0, transcript=None, label=None):
     parts = []
     if label:
         parts.append(label)
     if transcript:
         parts.append(TRANSCRIPT_PREFIX.format(transcript=transcript))
-    parts.append(CONFIRM_PROMPT.format(tasks=tasks_text, when=when))
+    parts.append(f"{CONFIRM_HEADER}\n{tasks_text}")
+    if when:
+        parts.append(CONFIRM_SAVE_ONE.format(when=when))
+    else:
+        parts.append(CONFIRM_SAVE_MANY.format(n=count))
     return "\n\n".join(parts)
+
+
+def _n_tasks(n):
+    return f"{n} task" if n == 1 else f"{n} tasks"
+
+
+def saved_summary(per_date, today=None):
+    """'Saved 3 tasks: 2 for tomorrow (Tue 20 Oct), 1 for Thu 22 Oct.'"""
+    total = sum(per_date.values())
+    if len(per_date) == 1:
+        d = next(iter(per_date))
+        return f"Saved {_n_tasks(total)} for {format_date_label(d, today)}."
+    parts = ", ".join(
+        f"{n} for {format_date_label(d, today)}" for d, n in sorted(per_date.items())
+    )
+    return f"Saved {_n_tasks(total)}: {parts}."
 
 
 def confirm_markup(state_id):

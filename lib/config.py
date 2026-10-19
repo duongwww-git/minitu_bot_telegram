@@ -93,6 +93,8 @@ USE_AI = cfg_bool("USE_AI", False)
 VOICE_QUEUE_MAX = cfg_int("VOICE_QUEUE_MAX", 5)
 VOICE_DRAIN_MAX = cfg_int("VOICE_DRAIN_MAX", 3)
 VOICE_RETRY_TTL_HOURS = cfg_int("VOICE_RETRY_TTL_HOURS", 48)
+# v2.1: how far ahead /list shows dated tasks.
+UPCOMING_DAYS = cfg_int("UPCOMING_DAYS", 30)
 
 # AI text parsing is opt-in (USE_AI flag). Voice transcription needs a Gemini key.
 AI_ENABLED = USE_AI and bool(GEMINI_API_KEY)

@@ -188,7 +188,7 @@ def add_daily_task(user_id, group_id, for_date, title, time_of_day=None):
     return res.data[0] if res.data else None
 
 
-def list_daily_tasks(user_id=None, group_id=None, for_date=None):
+def list_daily_tasks(user_id=None, group_id=None, for_date=None, start=None, end=None):
     db = _db()
     q = db.table("daily_tasks").select("*")
     if user_id is not None:
@@ -197,6 +197,10 @@ def list_daily_tasks(user_id=None, group_id=None, for_date=None):
         q = q.eq("group_id", group_id)
     if for_date is not None:
         q = q.eq("for_date", for_date)
+    if start is not None:
+        q = q.gte("for_date", start)
+    if end is not None:
+        q = q.lte("for_date", end)
     res = q.execute()
     return res.data or []
 

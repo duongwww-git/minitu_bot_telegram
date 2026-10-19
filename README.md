@@ -1,17 +1,22 @@
-# AI Reminder Bot (v2)
+# AI Reminder Bot (v2.1)
 
 Personal Telegram reminder agent for 2 users sharing one group chat. V1 is the
 rule-based core; V2 adds Google Gemini intelligence (text parsing + voice
-transcription). See `doc/SolutionDesignv1.md` and `doc/SolutionDesignv2.md`.
+transcription); V2.1 adds date detection. See `doc/SolutionDesignv1.md` and
+`doc/SolutionDesignv2.md`.
 
 ## Features
 
 - DM tasks (text or voice) from both users; one public digest at 6:00 AM GMT+7.
 - Rule-based parser by default; set `USE_AI=true` (plus a `GEMINI_API_KEY`) to
   parse free text with Gemini Flash first, falling back to the rule parser.
+- Name a day and the task is saved for that date: `today`, `mai`, `ngày mốt`,
+  `thứ 6`, `cuối tuần`, `20/10`, `ngày 20 tháng 10`. Without a day it defaults to
+  tomorrow. A past date falls back to tomorrow and tells you.
 - Voice notes in DM are transcribed with Gemini Transcribe, then parsed.
 - If transcription is rate-limited, recordings are queued (max 5) and can be
   retried with the **🔁 Retry** button or `/retry`.
+- `/list` shows your tasks from today forward, grouped by date.
 
 ## Setup
 
@@ -46,7 +51,7 @@ Two kinds of settings:
 - **Secrets** (`BOT_TOKEN`, `WEBHOOK_SECRET`, `CRON_SECRET`, `SUPABASE_URL`,
   `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`) — env vars only, never committed.
 - **Non-secret tunables** (`AI_MODEL_TEXT`, `AI_MODEL_TRANSCRIBE`, `USE_AI`,
-  `VOICE_QUEUE_MAX`, `VOICE_DRAIN_MAX`, `VOICE_RETRY_TTL_HOURS`,
+  `VOICE_QUEUE_MAX`, `VOICE_DRAIN_MAX`, `VOICE_RETRY_TTL_HOURS`, `UPCOMING_DAYS`,
   `GROUP_TIMEZONE`, `DIGEST_HOUR_LOCAL`) — defaults live in the committed
   `config.defaults.json`. Edit that file instead of Vercel.
 

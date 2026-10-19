@@ -1,10 +1,62 @@
 import re
+from datetime import date, timedelta
 
 
 _TIME_PATTERNS = [
     re.compile(r"(\d{1,2}):(\d{2})\s*(am|pm)?", re.I),
     re.compile(r"(\d{1,2})\s*(am|pm)", re.I),
 ]
+
+# v2.1: the rule parser intentionally understands only these day expressions.
+# Explicit dates, weekdays and "tuần sau" are handled by Slot A (Gemini) only,
+# so the fallback stays predictable when AI is unavailable.
+_RELATIVE_DAYS = [
+    (re.compile(r"\b(day after tomorrow)\b", re.I), 2),
+    (re.compile(r"\b(ngày kia|ngay kia)\b", re.I), 2),
+    (re.compile(r"\b(ngày mốt|ngay mot)\b", re.I), 2),
+    (re.compile(r"\b(ngày mai|ngay mai)\b", re.I), 1),
+    (re.compile(r"\b(tomorrow)\b", re.I), 1),
+    (re.compile(r"\b(ngày hôm nay|ngay hom nay|hôm nay|hom nay|today|tonight)\b", re.I), 0),
+    (re.compile(r"\bmốt\b", re.I), 2),
+    (re.compile(r"\bmai\b", re.I), 1),
+]
+_WEEKEND_RE = re.compile(r"\b(cuối tuần này|cuối tuần|cuoi tuan|this weekend|weekend)\b", re.I)
+
+# A segment that looks like a date must not have its trailing number read as a time
+# ("họp ngày 20 tháng 10" must not become 10:00).
+_DATEISH_RE = re.compile(r"\d{1,2}\s*[/-]\s*\d{1,2}|\b(ngày|ngay|tháng|thang)\b", re.I)
+
+
+def _clean_title(text):
+    text = re.sub(r"\s+", " ", text or "").strip()
+    text = re.sub(r"^(on|at|for|from|vào|vao|ngày|ngay|hẹn|hen)\s+", "", text, flags=re.I)
+    return text.strip(" ,.-")
+
+
+def _upcoming_saturday(today):
+    """The coming Saturday; today itself counts when today is Saturday."""
+    wd = today.isoweekday()  # Mon=1 ... Sun=7
+    if wd == 6:
+        return today
+    if wd == 7:
+        return today + timedelta(days=6)
+    return today + timedelta(days=6 - wd)
+
+
+def _extract_date(seg, today):
+    """Return (iso_date_or_None, segment_without_the_date_phrase)."""
+    for pattern, offset in _RELATIVE_DAYS:
+        m = pattern.search(seg)
+        if m:
+            return (today + timedelta(days=offset)).isoformat(), _clean_title(
+                seg[: m.start()] + " " + seg[m.end():]
+            )
+    m = _WEEKEND_RE.search(seg)
+    if m:
+        return _upcoming_saturday(today).isoformat(), _clean_title(
+            seg[: m.start()] + " " + seg[m.end():]
+        )
+    return None, seg
 
 
 def _normalize_time(hour, minute, ampm):
@@ -25,7 +77,7 @@ def _normalize_time(hour, minute, ampm):
     return f"{hour:02d}:{minute:02d}"
 
 
-def _extract_time(seg):
+def _extract_time(seg, allow_bare_hour=True):
     # Try HH:MM (am/pm optional)
     m = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)?", seg, re.I)
     if m:
@@ -41,6 +93,8 @@ def _extract_time(seg):
         title = re.sub(r"\s+", " ", title).strip(" ,.-")
         title = re.sub(r"^(at|on|to)\s+", "", title, flags=re.I)
         return title, time_str, m.group(0)
+    if not allow_bare_hour:
+        return seg.strip(), None, None
     # bare hour like "gym 18"
     m = re.search(r"\b(\d{1,2})\b(?!:)", seg)
     # only treat as time if segment has a trailing/leading number and a word
@@ -54,24 +108,30 @@ def _extract_time(seg):
     return seg.strip(), None, None
 
 
-def parse_tasks(text):
+def parse_tasks(text, today=None):
     if not text:
         return []
+    today = today or date.today()
     tasks = []
     for seg in re.split(r"[;\n,]+", text):
         seg = seg.strip()
         if not seg:
             continue
-        title, time_str, _ = _extract_time(seg)
+        date_str, seg = _extract_date(seg, today)
+        allow_bare_hour = not _DATEISH_RE.search(seg)
+        title, time_str, _ = _extract_time(seg, allow_bare_hour=allow_bare_hour)
         title = title.strip()
         if not title:
             continue
-        tasks.append({"title": title, "time": time_str})
+        task = {"title": title, "time": time_str}
+        if date_str:
+            task["date"] = date_str
+        tasks.append(task)
     # de-dup exact
     seen = set()
     out = []
     for t in tasks:
-        key = (t["title"].lower(), t["time"])
+        key = (t["title"].lower(), t["time"], t.get("date"))
         if key in seen:
             continue
         seen.add(key)
@@ -79,9 +139,7 @@ def parse_tasks(text):
     return out
 
 
-def format_tasks(tasks):
-    lines = []
-    for i, t in enumerate(tasks, 1):
-        time_part = f" — {t['time']}" if t.get("time") else " — (no time)"
-        lines.append(f"{i}. {t['title']}{time_part}")
-    return "\n".join(lines)
+def format_tasks(tasks, today=None):
+    from lib import messages
+
+    return messages.render_tasks(tasks, today=today, numbered=True)

@@ -88,6 +88,17 @@ def _norm_time(tok):
     return f"{hour:02d}:{minute:02d}"
 
 
+def _task_view(row):
+    """Normalize a daily_tasks row into the shape messages.render_tasks expects."""
+    t = row.get("time_of_day")
+    return {
+        "id": row.get("id"),
+        "title": row.get("title"),
+        "time": str(t)[:5] if t else None,
+        "date": row.get("for_date"),
+    }
+
+
 def _help_text():
     return messages.help_text()
 
@@ -98,24 +109,33 @@ def _send(chat_id, text, markup=None):
         markup = None  # only first chunk gets buttons
 
 
-def _parse_tasks(text):
+def _parse_tasks(text, today=None):
     """AI first (Slot A, when enabled), else fall back to the v1 rule parser."""
+    today = today or _today()
     if config.AI_ENABLED:
-        tasks = ai.parse_tasks_ai(text)
+        tasks = ai.parse_tasks_ai(text, today_iso=today.isoformat(), tz_name=config.GROUP_TIMEZONE)
         if tasks:
             return tasks
-    return parser.parse_tasks(text)
+    return parser.parse_tasks(text, today=today)
 
 
 def start_task_input(user, chat_id, text, target_date, group_id, transcript=None, label=None):
-    tasks = _parse_tasks(text)
+    today = _today()
+    tasks = _parse_tasks(text, today=today)
     if not tasks:
         tg.send_message(chat_id, messages.COULD_NOT_PARSE)
         return
+    default_date = target_date.isoformat()
+    any_date_rejected = False
+    for t in tasks:
+        # a date the AI named but we could not use (past/malformed) falls back
+        if t.pop("date_rejected", False):
+            any_date_rejected = True
+        t["date"] = t.get("date") or default_date
     state_payload = {
         "action": "confirm_tasks",
         "tasks": tasks,
-        "target_date": target_date.isoformat(),
+        "target_date": default_date,
         "group_id": group_id,
     }
     if transcript:
@@ -124,8 +144,22 @@ def start_task_input(user, chat_id, text, target_date, group_id, transcript=None
     if not state:
         tg.send_message(chat_id, "Failed to create confirmation state. Try again.")
         return
-    when = "today" if target_date == _today() else "tomorrow"
-    body = messages.confirm_prompt(parser.format_tasks(tasks), when, transcript=transcript, label=label)
+    when = (
+        messages.format_date_label(tasks[0]["date"], today)
+        if messages.all_same_date(tasks)
+        else None
+    )
+    body = messages.confirm_prompt(
+        parser.format_tasks(tasks, today=today),
+        when=when,
+        count=len(tasks),
+        transcript=transcript,
+        label=label,
+    )
+    if any_date_rejected:
+        body += "\n\n" + messages.DATE_IN_PAST.format(
+            when=messages.format_date_label(default_date, today)
+        )
     tg.send_message(chat_id, body, reply_markup=messages.confirm_markup(state["id"]))
 
 
@@ -306,12 +340,16 @@ def handle_command(cmd, args, user, chat_id, is_group=False, group_id=None):
 
     if cmd == "/list":
         uid = user["id"]
+        today = _today()
         prefs = repo.list_reminders(user_id=uid)
-        today = _today().isoformat()
-        tasks = repo.list_daily_tasks(user_id=uid, for_date=today)
         # if admin, also show shared? include shared for primary group
         gid = _primary_group_id(uid)
         shared = repo.list_reminders(shared=True, group_id=gid) if gid else []
+        tasks = repo.list_daily_tasks(
+            user_id=uid,
+            start=today.isoformat(),
+            end=(today + timedelta(days=config.UPCOMING_DAYS)).isoformat(),
+        )
         msg = "Your default reminders:\n"
         if prefs:
             for r in prefs:
@@ -324,11 +362,11 @@ def handle_command(cmd, args, user, chat_id, is_group=False, group_id=None):
             for r in shared:
                 t = str(r.get("time_of_day"))[:5] if r.get("time_of_day") else "anytime"
                 msg += f"- {str(r['id'])[:8]} | {t} {r['title']}\n"
-        msg += f"\nToday's tasks ({today}):\n"
+        msg += f"\nYour tasks (today and the next {config.UPCOMING_DAYS} days):\n"
         if tasks:
-            for t in tasks:
-                tt = str(t.get("time_of_day"))[:5] if t.get("time_of_day") else "anytime"
-                msg += f"- {str(t['id'])[:8]} | {tt} {t['title']}\n"
+            msg += messages.render_tasks(
+                [_task_view(r) for r in tasks], today=today, always_group=True, show_id=True
+            )
         else:
             msg += "(none)\n"
         _send(chat_id, msg)
@@ -655,14 +693,15 @@ def handle_callback(callback_query):
 
     if action == "confirm":
         try:
-            td = target_date_str
-            inserted = 0
+            today = _today()
+            per_date = {}
             for t in tasks:
-                repo.add_daily_task(user["id"], group_id, td, t["title"], t.get("time"))
-                inserted += 1
+                d = t.get("date") or target_date_str
+                repo.add_daily_task(user["id"], group_id, d, t["title"], t.get("time"))
+                per_date[d] = per_date.get(d, 0) + 1
             repo.delete_state(state_id)
             tg.answer_callback_query(cq_id, "Saved.")
-            tg.send_message(chat_id, f"Saved {inserted} task(s) for {td}.")
+            tg.send_message(chat_id, messages.saved_summary(per_date, today=today))
         except Exception as e:
             tg.answer_callback_query(cq_id, "Failed to save.", show_alert=True)
             tg.send_message(chat_id, f"Error saving tasks: {e}")

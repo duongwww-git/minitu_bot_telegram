@@ -53,6 +53,8 @@ create table conversation_state (
 -- state = {"kind":"pending_voice","file_id":…,"message_id":…,"duration":…,"status":"queued"}.
 
 -- reminders/daily_tasks: add column priority int default 0, recurrence text (rrule optional later)
+-- daily_tasks.for_date (date) and .time_of_day (time) already exist in V1, so v2.1 date
+-- detection needs no migration; a task is simply stored with the date it names.
 -- users: add timezone text default 'Asia/Bangkok'
 -- groups: digest_time_local time, timezone text
 -- new:
@@ -76,10 +78,10 @@ create table notification_prefs (
 
 ## 5. AI prompt design (outline)
 
-- Input: raw user text + current datetime in user TZ + user's recent task history.
-- Output: strict JSON schema: `{tasks:[{title,time (HH:MM|null),priority (1-3),notes?}]}`.
-- Rules: no hallucinated tasks; if time ambiguous, return `clarify` with question instead of guessing.
-- Safety: cap output length; fallback to rule parser if JSON invalid.
+- Input: raw user text + current *local* datetime (`GROUP_TIMEZONE`) + weekday + user's recent task history.
+- Output: strict JSON schema: `{tasks:[{title,time (HH:MM|null),date (YYYY-MM-DD|null),priority (1-3),notes?}]}`.
+- Rules: no hallucinated tasks or dates; if time ambiguous, return `clarify` with question instead of guessing.
+- Safety: cap output length; validate dates (`_clean_date`); fallback to rule parser if JSON invalid.
 - Cost: Gemini Flash free tier for parsing; use small context; cache normalized phrases? Optional.
 
 ## 6. AI architecture (two slots) — Google Gemini
@@ -125,7 +127,8 @@ Non-secret tunables default to the committed `config.defaults.json`:
   "USE_AI": false,
   "VOICE_QUEUE_MAX": 5,
   "VOICE_DRAIN_MAX": 3,
-  "VOICE_RETRY_TTL_HOURS": 48
+  "VOICE_RETRY_TTL_HOURS": 48,
+  "UPCOMING_DAYS": 30
 }
 ```
 
@@ -166,6 +169,64 @@ On 429 (after one quick in-request retry with ~1–2 s backoff):
 
 Decisions: **queue (not most-recent-only), cap 5, English copy in V2.** Vietnamese retry/status
 copy is deferred to V3. Copy lives in `lib/messages.py` (see §3).
+
+### 6.6 Date detection (v2.1)
+
+Text and voice input may name a day; the task is then stored **for that date**
+(`daily_tasks.for_date`, which already exists in V1 — no migration, no regex in the DB).
+
+**Slot A (Gemini) — full set.** `parse_tasks_ai(text, today_iso, tz_name)` asks for a
+nullable `date` field (`YYYY-MM-DD`) and resolves it against the local date:
+
+| Wording | Resolves to |
+|---|---|
+| `hôm nay` / `today` / `tonight` | today |
+| `ngày mai` / `mai` / `tomorrow` | +1 day |
+| `ngày mốt` / `mốt` / `day after tomorrow` | +2 days |
+| `thứ 2`..`chủ nhật` / `Monday`..`Sunday` | next occurrence (today counts if it matches) |
+| `cuối tuần` / `weekend` | the coming Saturday |
+| `tuần sau` / `next week` | the same weekday next week |
+| `20/10`, `ngày 20 tháng 10`, `20 Oct`, `2026-10-20` | that date (day/month order) |
+
+Validation (`lib/ai.py::_clean_date`) accepts only ISO inside `[today, today + 365]`.
+Anything else — malformed or already past — is dropped and flagged as
+`task["date_rejected"]`; the handler then uses the default date (tomorrow) and appends
+*"That date is already in the past, so I saved it for {when} instead."*
+
+**Local-date contract.** `today_iso` is the *group-local* date (`GROUP_TIMEZONE`), never
+`datetime.now()`. Vercel runs UTC, so between 00:00 and 07:00 GMT+7 the UTC date is still
+yesterday and "today" would silently resolve one day early.
+
+**Rule parser (fallback) — deliberately narrow.** `lib/parser.py` understands only
+today / tomorrow / day-after-tomorrow / weekend→Saturday. Explicit dates, weekdays and
+`tuần sau` are AI-only. Two ordering details matter: date extraction runs **before** time
+extraction and consumes the matched phrase, and date-ish segments skip the bare-hour rule —
+otherwise `họp ngày 20 tháng 10` is read as `10:00` and `ngày 20` as `20:00`.
+
+**Confirmation & listing.** Each task carries its own date in the confirmation state, so a
+Save pressed later still lands on the right day. A single date renders
+`Save for tomorrow (Tue 20 Oct)?`; several render grouped by date with
+`Save these N tasks?`. `/list` shows today-forward tasks grouped by date
+(`UPCOMING_DAYS`, default 30) with short ids for `/remove`.
+
+**Overdue.** There is no done/cancelled flow yet, so overdue is *derived*, not stored:
+`for_date < today and not done`. `/list` is today-forward and the digest filters
+`for_date = today`, so overdue tasks appear in neither; the derivation is groundwork for the
+done/snooze flow in §7 and adds no schema.
+
+**Calendar readiness (v3).** `for_date` + `time_of_day` + `GROUP_TIMEZONE` map directly onto
+Google Calendar `events.insert` `start.dateTime`/`end.dateTime`; `daily_tasks.google_event_id`
+is the only column the v3 integration adds.
+
+**Known trade-offs.**
+
+- Slot A failure (429 / timeout / invalid JSON) falls back **silently** to the rule parser,
+  which knows only the four relative phrases — so an explicit date in a fallback message
+  lands on tomorrow. Intentional: the rule path stays small and predictable.
+- Past dates are *reported*, not rolled forward, so the user sees exactly what happened.
+- Ambiguous numeric dates are day/month (Vietnam style).
+- Vague wording (`tuần sau`, `cuối tuần`) is resolved by the model, so it is best-effort
+  rather than exact.
 
 ## 7. Done/snooze flow (outline)
 
